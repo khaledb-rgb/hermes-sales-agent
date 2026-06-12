@@ -13,18 +13,21 @@ _system_prompt_path = Path(__file__).parent / "prompts" / "system_prompt.txt"
 
 def generate_report(data: dict) -> str:
     system = _system_prompt_path.read_text(encoding="utf-8")
-    user_message = json.dumps(data, ensure_ascii=False, default=str)
-
-    with _client.messages.stream(
-        model="claude-opus-4-8",
-        max_tokens=4096,
-        thinking={"type": "adaptive"},
-        system=system,
-        messages=[{"role": "user", "content": user_message}],
-    ) as stream:
-        message = stream.get_final_message()
-
-    return next(
-        (block.text for block in message.content if block.type == "text"),
-        "",
+    user_message = (
+        "Here is today's CRM data. Generate the sales report:\n\n"
+        + json.dumps(data, ensure_ascii=False, default=str)
     )
+
+    try:
+        message = _client.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=2048,
+            system=system,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        return next(
+            (block.text for block in message.content if block.type == "text"),
+            "",
+        )
+    except anthropic.APIError as e:
+        return f"[Hermes] API error: {e}"
