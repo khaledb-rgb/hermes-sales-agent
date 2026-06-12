@@ -152,7 +152,31 @@ def generate_report(data: dict) -> str:
         return f"[Hermes] API error: {e}"
 
 
-_TABLE_KEYWORDS = {"table", "tableau", "جدول", "tabela", "tabell"}
+_TABLE_KEYWORDS = {"table", "tableau", "جدول", "tabela", "tabell", "teble"}
+
+
+def _wrap_tables(text: str) -> str:
+    """Guarantee every pipe table is inside a triple-backtick code fence."""
+    lines = text.split("\n")
+    result, buf, in_code = [], [], False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code = not in_code
+            if buf:
+                result += ["```"] + buf + ["```"]
+                buf = []
+            result.append(line)
+        elif not in_code and stripped.startswith("|"):
+            buf.append(line)
+        else:
+            if buf:
+                result += ["```"] + buf + ["```"]
+                buf = []
+            result.append(line)
+    if buf:
+        result += ["```"] + buf + ["```"]
+    return "\n".join(result)
 
 
 def answer_question(question: str, data: dict) -> str:
@@ -171,4 +195,7 @@ def answer_question(question: str, data: dict) -> str:
             {"role": "user", "content": user_message},
         ],
     )
-    return response.choices[0].message.content or ""
+    text = response.choices[0].message.content or ""
+    if wants_table:
+        text = _wrap_tables(text)
+    return text

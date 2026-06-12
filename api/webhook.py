@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from claude_agent import answer_question, generate_report
 from ghl_client import fetch_all, fetch_for_qa
 from github_client import save_report
-from telegram_client import delete_message, edit_message, send_error, send_message, send_report
+from telegram_client import send_error, send_message, send_report, send_typing
 
 _cache: dict = {"data": None, "ts": 0.0}
 _CACHE_TTL = 300  # 5 minutes
@@ -93,45 +93,21 @@ def _handle_update(update: dict) -> None:
     if not question:
         return
 
-    # Use cached GHL data if fresh; otherwise fetch in parallel with thinking message
+    send_typing(chat_id)
+
     cached = _get_cached_data()
-    fetch_thread = None
-    ghl_result: list = [None]
-    ghl_error: list = [None]
-
     if cached is None:
-        def _fetch():
-            try:
-                ghl_result[0] = fetch_for_qa()
-            except Exception as exc:
-                ghl_error[0] = exc
-
-        fetch_thread = threading.Thread(target=_fetch, daemon=True)
-        fetch_thread.start()
-
-    thinking_msg_id = send_message(chat_id, "_Hermes is thinking..._")
-
-    if fetch_thread is not None:
-        fetch_thread.join(timeout=8)
-        if ghl_error[0]:
-            if thinking_msg_id:
-                delete_message(chat_id, thinking_msg_id)
-            send_error(str(ghl_error[0]))
+        try:
+            cached = fetch_for_qa()
+            _set_cache(cached)
+        except Exception as exc:
+            send_error(str(exc))
             return
-        cached = ghl_result[0] or {}
-        _set_cache(cached)
 
     try:
         answer = answer_question(question, cached)
-        if thinking_msg_id:
-            if not edit_message(chat_id, thinking_msg_id, answer):
-                delete_message(chat_id, thinking_msg_id)
-                send_message(chat_id, answer)
-        else:
-            send_message(chat_id, answer)
+        send_message(chat_id, answer)
     except Exception as e:
-        if thinking_msg_id:
-            delete_message(chat_id, thinking_msg_id)
         send_error(str(e))
 
 

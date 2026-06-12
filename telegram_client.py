@@ -15,6 +15,18 @@ _BASE_URL = f"https://api.telegram.org/bot{_TOKEN}"
 _CHUNK_SIZE = 4000
 
 
+def send_typing(chat_id: str) -> None:
+    """Show the built-in Telegram typing indicator (lasts ~5s, disappears on next message)."""
+    try:
+        requests.post(
+            f"{_BASE_URL}/sendChatAction",
+            json={"chat_id": chat_id, "action": "typing"},
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+
 def send_message(chat_id: str, text: str) -> int | None:
     """Send a message and return the message_id of the last sent chunk."""
     chunks = [text[i : i + _CHUNK_SIZE] for i in range(0, len(text), _CHUNK_SIZE)]
