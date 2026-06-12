@@ -13,8 +13,13 @@ _system_prompt_path = Path(__file__).parent / "prompts" / "system_prompt.txt"
 _QA_SYSTEM = """You are Hermes, an AI assistant embedded in a sales team's Telegram group.
 You have access to live CRM data from GoHighLevel: contacts, opportunities, users, and pipelines.
 
+OUTPUT MEDIUM: Your replies are sent via the Telegram Bot API with parse_mode=Markdown. \
+Telegram renders triple-backtick fenced blocks as monospace code — ASCII tables display perfectly inside them. \
+You have NO technical limitation on producing tables. Always output them directly when asked.
+
 Rules:
 - Answer only from the data provided. Never invent or estimate figures.
+- NEVER truncate lists with "and X more" or "..." — always show every item in full.
 - Give detailed, structured answers. Break down numbers, list names, show totals.
 - If asked about leads: give the count, list names, sources, and who they're assigned to.
 - If asked about deals: give count, total pipeline value, stage breakdown, and assigned reps.
@@ -23,6 +28,19 @@ Rules:
 - Always end with a short *Summary* line with the key takeaway.
 - Use Telegram Markdown: *bold* for names/numbers/totals, `code` for stages/IDs, _italic_ for labels.
 - If the data does not contain enough information to answer, say so clearly."""
+
+_TABLE_INSTRUCTION = """
+
+Respond with a pipe-and-dash ASCII table inside a triple-backtick code fence. \
+Do NOT add any explanation before the table — output it directly. \
+Header row first, then a separator row of dashes, then one data row per item. Truncate names to 15 chars. \
+Example:
+```
+| Name           | Deals | Value     |
+|----------------|-------|-----------|
+| John Smith     | 5     | $10,000   |
+| Jane Doe       | 3     | $7,500    |
+```"""
 
 
 def _pick(record: dict, keys: list) -> dict:
@@ -34,12 +52,12 @@ def _slim_for_qa(data: dict) -> dict:
     return {
         "contacts": [
             _pick(c, ["id", "firstName", "lastName", "assignedTo", "source", "dateAdded", "tags"])
-            for c in data.get("contacts", [])[:100]
+            for c in data.get("contacts", [])
         ],
         "opportunities": [
             _pick(o, ["id", "name", "monetaryValue", "status", "pipelineStageName",
                       "assignedTo", "updatedAt", "expectedCloseDate"])
-            for o in data.get("opportunities", [])[:100]
+            for o in data.get("opportunities", [])
         ],
         "users": [
             _pick(u, ["id", "firstName", "lastName"])
@@ -102,15 +120,20 @@ def generate_report(data: dict) -> str:
         return f"[Hermes] API error: {e}"
 
 
+_TABLE_KEYWORDS = {"table", "tableau", "جدول", "tabela", "tabell"}
+
+
 def answer_question(question: str, data: dict) -> str:
+    wants_table = any(kw in question.lower() for kw in _TABLE_KEYWORDS)
+    suffix = _TABLE_INSTRUCTION if wants_table else ""
     user_message = (
         "Here is the current CRM data:\n\n"
         + json.dumps(_slim_for_qa(data), ensure_ascii=False, default=str)
-        + f"\n\nQuestion: {question}"
+        + f"\n\nQuestion: {question}{suffix}"
     )
     response = _client.chat.completions.create(
         model="gpt-4o-mini",
-        max_tokens=600,
+        max_tokens=4000,
         messages=[
             {"role": "system", "content": _QA_SYSTEM},
             {"role": "user", "content": user_message},

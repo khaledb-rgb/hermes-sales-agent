@@ -15,16 +15,30 @@ _BASE_URL = f"https://api.telegram.org/bot{_TOKEN}"
 _CHUNK_SIZE = 4000
 
 
-def send_message(chat_id: str, text: str) -> None:
+def send_message(chat_id: str, text: str) -> int | None:
+    """Send a message and return the message_id of the last sent chunk."""
     chunks = [text[i : i + _CHUNK_SIZE] for i in range(0, len(text), _CHUNK_SIZE)]
+    message_id = None
     for index, chunk in enumerate(chunks, start=1):
         response = requests.post(
             f"{_BASE_URL}/sendMessage",
             json={"chat_id": chat_id, "text": chunk, "parse_mode": "Markdown"},
         )
         response.raise_for_status()
+        message_id = response.json().get("result", {}).get("message_id")
         if len(chunks) > 1:
             print(f"[telegram] sent chunk {index}/{len(chunks)}")
+    return message_id
+
+
+def delete_message(chat_id: str, message_id: int) -> None:
+    try:
+        requests.post(
+            f"{_BASE_URL}/deleteMessage",
+            json={"chat_id": chat_id, "message_id": message_id},
+        )
+    except Exception as e:
+        print(f"[telegram] could not delete message {message_id}: {e}")
 
 
 def send_error(error: str) -> None:

@@ -29,11 +29,37 @@ def _get(path: str, params: dict = None) -> dict:
 
 
 def get_contacts() -> list:
-    return _get("/contacts/", {"locationId": LOCATION_ID, "limit": 100}).get("contacts", [])
+    """Fetch all contacts using cursor-based pagination."""
+    results, after = [], None
+    while True:
+        params = {"locationId": LOCATION_ID, "limit": 100}
+        if after:
+            params["startAfterId"] = after
+        data = _get("/contacts/", params)
+        page = data.get("contacts", [])
+        results.extend(page)
+        meta = data.get("meta", {})
+        after = meta.get("startAfterId") or meta.get("nextPageUrl")
+        if not after or len(page) < 100:
+            break
+    return results
 
 
 def get_opportunities() -> list:
-    return _get("/opportunities/search", {"location_id": LOCATION_ID, "limit": 100}).get("opportunities", [])
+    """Fetch all opportunities using cursor-based pagination."""
+    results, after = [], None
+    while True:
+        params = {"location_id": LOCATION_ID, "limit": 100}
+        if after:
+            params["startAfterId"] = after
+        data = _get("/opportunities/search", params)
+        page = data.get("opportunities", [])
+        results.extend(page)
+        meta = data.get("meta", {})
+        after = meta.get("startAfterId") or meta.get("nextPageUrl")
+        if not after or len(page) < 100:
+            break
+    return results
 
 
 def get_users() -> list:

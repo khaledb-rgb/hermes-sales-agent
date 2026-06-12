@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler
 
 # Project root is the parent of the api/ directory
@@ -12,7 +13,24 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from claude_agent import answer_question, generate_report
 from ghl_client import fetch_all, fetch_for_qa
 from github_client import save_report
-from telegram_client import send_error, send_message, send_report
+from telegram_client import delete_message, send_error, send_message, send_report
+
+_cache: dict = {"data": None, "ts": 0.0}
+_CACHE_TTL = 300  # 5 minutes
+
+_processed_updates: set = set()  # dedup Telegram retries
+_processed_lock = threading.Lock()
+
+
+def _get_cached_data() -> dict | None:
+    if _cache["data"] is not None and time.time() - _cache["ts"] < _CACHE_TTL:
+        return _cache["data"]
+    return None
+
+
+def _set_cache(data: dict) -> None:
+    _cache["data"] = data
+    _cache["ts"] = time.time()
 
 
 def _extract_question(text: str, entities: list) -> str:
@@ -75,53 +93,83 @@ def _handle_update(update: dict) -> None:
     if not question:
         return
 
-    # Q&A: kick off GHL fetch and "thinking" message in parallel, then call OpenAI
+    # Use cached GHL data if fresh; otherwise fetch in parallel with thinking message
+    cached = _get_cached_data()
+    fetch_thread = None
     ghl_result: list = [None]
     ghl_error: list = [None]
 
-    def _fetch():
-        try:
-            ghl_result[0] = fetch_for_qa()
-        except Exception as exc:
-            ghl_error[0] = exc
+    if cached is None:
+        def _fetch():
+            try:
+                ghl_result[0] = fetch_for_qa()
+            except Exception as exc:
+                ghl_error[0] = exc
 
-    fetch_thread = threading.Thread(target=_fetch, daemon=True)
-    fetch_thread.start()
+        fetch_thread = threading.Thread(target=_fetch, daemon=True)
+        fetch_thread.start()
 
-    send_message(chat_id, "_Hermes is thinking..._")  # runs while GHL fetches
+    thinking_msg_id = send_message(chat_id, "_Hermes is thinking..._")
 
-    fetch_thread.join(timeout=8)
-    if ghl_error[0]:
-        send_error(str(ghl_error[0]))
-        return
+    if fetch_thread is not None:
+        fetch_thread.join(timeout=8)
+        if ghl_error[0]:
+            if thinking_msg_id:
+                delete_message(chat_id, thinking_msg_id)
+            send_error(str(ghl_error[0]))
+            return
+        cached = ghl_result[0] or {}
+        _set_cache(cached)
 
     try:
-        answer = answer_question(question, ghl_result[0] or {})
+        answer = answer_question(question, cached)
+        if thinking_msg_id:
+            delete_message(chat_id, thinking_msg_id)
         send_message(chat_id, answer)
     except Exception as e:
+        if thinking_msg_id:
+            delete_message(chat_id, thinking_msg_id)
         send_error(str(e))
 
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        """Keep-warm health check — triggered every 5 min by GitHub Actions cron."""
+        """Keep-warm — also pre-fills GHL cache so Q&A requests are fast."""
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"OK")
+        # Refresh cache in background so the next Q&A skips the GHL fetch
+        def _warm():
+            try:
+                _set_cache(fetch_for_qa())
+            except Exception as e:
+                print(f"[webhook] cache warm error: {e}")
+        threading.Thread(target=_warm, daemon=True).start()
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
+
+        # Respond immediately — Vercel buffers until do_POST returns, so we
+        # spawn a background thread and return right away.
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"ok": true}')
+
         try:
             update = json.loads(body)
-            _handle_update(update)
+            update_id = update.get("update_id")
+            with _processed_lock:
+                if update_id in _processed_updates:
+                    return  # duplicate retry — drop silently
+                _processed_updates.add(update_id)
+                if len(_processed_updates) > 500:
+                    _processed_updates.clear()
+            # Non-daemon thread: Fluid Compute keeps the instance alive until it finishes
+            threading.Thread(target=_handle_update, args=(update,), daemon=False).start()
         except Exception as e:
             print(f"[webhook] error: {e}")
-        finally:
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(b'{"ok": true}')
 
     def log_message(self, *args):
         pass  # suppress built-in request logging
