@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from claude_agent import answer_question, generate_report
-from ghl_client import fetch_all
+from ghl_client import fetch_all, fetch_for_qa
 from github_client import save_report
 from telegram_client import send_error, send_message, send_report
 
@@ -42,7 +42,7 @@ def _handle_update(update: dict) -> None:
     # Q&A: send "thinking" placeholder, fetch GHL data, call OpenAI, send answer
     send_message(chat_id, "_Hermes is thinking..._")
     try:
-        data = fetch_all()
+        data = fetch_for_qa()
         answer = answer_question(text, data)
         send_message(chat_id, answer)
     except Exception as e:
@@ -50,6 +50,12 @@ def _handle_update(update: dict) -> None:
 
 
 class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        """Keep-warm health check — triggered every 5 min by GitHub Actions cron."""
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)

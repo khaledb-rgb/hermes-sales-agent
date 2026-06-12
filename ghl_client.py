@@ -61,6 +61,27 @@ def get_contact_appointments(contact_id: str) -> list:
     return _get(f"/contacts/{contact_id}/appointments").get("events", [])
 
 
+def fetch_for_qa() -> dict:
+    """Fetch only Q&A-relevant GHL data in parallel — skips conversations & invoices."""
+    fetchers = {
+        "contacts": get_contacts,
+        "opportunities": get_opportunities,
+        "users": get_users,
+        "pipelines": get_pipelines,
+    }
+    results = {}
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(fn): key for key, fn in fetchers.items()}
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                results[key] = future.result()
+            except Exception as e:
+                print(f"[ghl] {key} fetch error: {e}")
+                results[key] = []
+    return results
+
+
 def fetch_all() -> dict:
     """Fetch all GHL data in parallel — ~1.5s instead of ~6s sequential."""
     fetchers = {
