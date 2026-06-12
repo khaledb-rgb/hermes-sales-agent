@@ -9,6 +9,7 @@ load_dotenv()
 
 _TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 _CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+_ADMIN_ID = os.getenv("TELEGRAM_ADMIN_ID")
 _BASE_URL = f"https://api.telegram.org/bot{_TOKEN}"
 
 _CHUNK_SIZE = 4000
@@ -24,6 +25,16 @@ def send_message(chat_id: str, text: str) -> None:
         response.raise_for_status()
         if len(chunks) > 1:
             print(f"[telegram] sent chunk {index}/{len(chunks)}")
+
+
+def send_error(error: str) -> None:
+    """Send full error details privately to admin only."""
+    if _ADMIN_ID:
+        try:
+            send_message(_ADMIN_ID, f"⚠️ *Hermes error:*\n`{error}`")
+        except Exception as e:
+            print(f"[telegram] could not send error to admin: {e}")
+    print(f"[telegram] error: {error}")
 
 
 def send_report(text: str) -> None:
@@ -70,7 +81,6 @@ def start_polling(handler: Callable[[str, str], None]) -> None:
                 if not text or not chat_id:
                     continue
 
-                # ignore bot commands except /report
                 if text.startswith("/") and not text.startswith("/report"):
                     continue
 
@@ -78,8 +88,7 @@ def start_polling(handler: Callable[[str, str], None]) -> None:
                 try:
                     handler(text, chat_id)
                 except Exception as e:
-                    print(f"[telegram] handler error: {e}")
-                    send_message(chat_id, f"_Hermes encountered an error: {e}_")
+                    send_error(str(e))
 
         except requests.RequestException as e:
             print(f"[telegram] polling error: {e} — retrying in 5s")
