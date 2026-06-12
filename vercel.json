@@ -1,6 +1,6 @@
 {
   "functions": {
-    "api/webhook.py": {
+    "api/*.py": {
       "maxDuration": 10
     }
   }
