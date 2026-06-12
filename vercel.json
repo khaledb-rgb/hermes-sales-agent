@@ -2,7 +2,6 @@
   "framework": null,
   "functions": {
     "api/webhook.py": {
-      "runtime": "@vercel/python",
       "maxDuration": 10
     }
   }
