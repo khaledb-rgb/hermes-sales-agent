@@ -36,4 +36,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_OWNER: khaledb-rgb
           GITHUB_REPO: hermes-sales-agent
-        run: python main.py
+        run: python run_report.py
