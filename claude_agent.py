@@ -89,15 +89,12 @@ def answer_question(question: str, data: dict) -> str:
         + json.dumps(_slim(data), ensure_ascii=False, default=str)
         + f"\n\nQuestion: {question}"
     )
-    try:
-        response = _client.chat.completions.create(
-            model="gpt-4o-mini",
-            max_tokens=1024,
-            messages=[
-                {"role": "system", "content": _QA_SYSTEM},
-                {"role": "user", "content": user_message},
-            ],
-        )
-        return response.choices[0].message.content or ""
-    except OpenAIError as e:
-        return f"[Hermes] API error: {e}"
+    response = _client.chat.completions.create(
+        model="gpt-4o-mini",
+        max_tokens=1024,
+        messages=[
+            {"role": "system", "content": _QA_SYSTEM},
+            {"role": "user", "content": user_message},
+        ],
+    )
+    return response.choices[0].message.content or ""
