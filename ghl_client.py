@@ -17,10 +17,17 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
+_REQUEST_TIMEOUT = 8  # seconds per individual GHL API call
+
 
 def _get(path: str, params: dict = None) -> dict:
     try:
-        r = requests.get(f"{BASE_URL}{path}", headers=HEADERS, params=params or {})
+        r = requests.get(
+            f"{BASE_URL}{path}",
+            headers=HEADERS,
+            params=params or {},
+            timeout=_REQUEST_TIMEOUT,
+        )
         r.raise_for_status()
         return r.json()
     except requests.RequestException as e:
@@ -28,9 +35,12 @@ def _get(path: str, params: dict = None) -> dict:
         return {}
 
 
-def get_contacts() -> list:
-    """Fetch all contacts using cursor-based pagination."""
-    results, after = [], None
+def get_contacts(max_pages: int = 0) -> list:
+    """Fetch contacts using cursor-based pagination.
+
+    max_pages=0 means fetch all pages. max_pages=N stops after N pages.
+    """
+    results, after, page_count = [], None, 0
     while True:
         params = {"locationId": LOCATION_ID, "limit": 100}
         if after:
@@ -38,16 +48,22 @@ def get_contacts() -> list:
         data = _get("/contacts/", params)
         page = data.get("contacts", [])
         results.extend(page)
+        page_count += 1
         meta = data.get("meta", {})
         after = meta.get("startAfterId") or meta.get("nextPageUrl")
         if not after or len(page) < 100:
             break
+        if max_pages and page_count >= max_pages:
+            break
     return results
 
 
-def get_opportunities() -> list:
-    """Fetch all opportunities using cursor-based pagination."""
-    results, after = [], None
+def get_opportunities(max_pages: int = 0) -> list:
+    """Fetch opportunities using cursor-based pagination.
+
+    max_pages=0 means fetch all pages. max_pages=N stops after N pages.
+    """
+    results, after, page_count = [], None, 0
     while True:
         params = {"location_id": LOCATION_ID, "limit": 100}
         if after:
@@ -55,9 +71,12 @@ def get_opportunities() -> list:
         data = _get("/opportunities/search", params)
         page = data.get("opportunities", [])
         results.extend(page)
+        page_count += 1
         meta = data.get("meta", {})
         after = meta.get("startAfterId") or meta.get("nextPageUrl")
         if not after or len(page) < 100:
+            break
+        if max_pages and page_count >= max_pages:
             break
     return results
 
@@ -88,10 +107,16 @@ def get_contact_appointments(contact_id: str) -> list:
 
 
 def fetch_for_qa() -> dict:
-    """Fetch only Q&A-relevant GHL data in parallel — skips conversations & invoices."""
+    """Fetch Q&A-relevant GHL data in parallel.
+
+    Contacts and opportunities are capped at 3 pages (300 records each)
+    so a cold-start response fits well within Telegram's 60s read timeout.
+    The claude_agent layer computes summary stats from these records and
+    sends only the most recent 300/200 to OpenAI anyway.
+    """
     fetchers = {
-        "contacts": get_contacts,
-        "opportunities": get_opportunities,
+        "contacts": lambda: get_contacts(max_pages=3),
+        "opportunities": lambda: get_opportunities(max_pages=2),
         "users": get_users,
         "pipelines": get_pipelines,
     }
@@ -109,7 +134,7 @@ def fetch_for_qa() -> dict:
 
 
 def fetch_all() -> dict:
-    """Fetch all GHL data in parallel — ~1.5s instead of ~6s sequential."""
+    """Fetch all GHL data in parallel (used for the daily report)."""
     fetchers = {
         "contacts": get_contacts,
         "opportunities": get_opportunities,
