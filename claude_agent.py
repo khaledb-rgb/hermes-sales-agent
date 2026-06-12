@@ -32,14 +32,18 @@ Rules:
 _TABLE_INSTRUCTION = """
 
 Respond with a pipe-and-dash ASCII table inside a triple-backtick code fence. \
-Do NOT add any explanation before the table — output it directly. \
-Header row first, then a separator row of dashes, then one data row per item. Truncate names to 15 chars. \
+Rules for a clean table:
+- Header row, then separator row of dashes, then data rows.
+- Max 4 columns — pick only the most relevant fields.
+- Truncate cell values to 14 chars max (add … if cut).
+- Dates are already formatted as YYYY-MM-DD — keep them as-is.
+- Rep names are already resolved — never show IDs.
+- Keep each row on a single line.
 Example:
 ```
-| Name           | Deals | Value     |
-|----------------|-------|-----------|
-| John Smith     | 5     | $10,000   |
-| Jane Doe       | 3     | $7,500    |
+| Name           | Source   | Rep          | Date       |
+|----------------|----------|--------------|------------|
+| John Smith     | Calendly | Egor K.      | 2026-06-12 |
 ```"""
 
 
@@ -47,20 +51,48 @@ def _pick(record: dict, keys: list) -> dict:
     return {k: v for k, v in record.items() if k in keys and v not in (None, "", [], {})}
 
 
+def _fmt_date(val: str) -> str:
+    """2026-06-12T16:14:28.130Z → 2026-06-12"""
+    return val[:10] if val and "T" in val else (val or "")
+
+
 def _slim_for_qa(data: dict) -> dict:
     """Minimal context for Q&A — contacts, opportunities, users, pipeline names only."""
+    # Pre-resolve user IDs → full names so the model never sees raw IDs
+    user_map = {
+        u["id"]: f"{u.get('firstName', '')} {u.get('lastName', '')}".strip()
+        for u in data.get("users", [])
+        if u.get("id")
+    }
+
+    def rep(uid: str) -> str:
+        return user_map.get(uid, uid or "")
+
     return {
         "contacts": [
-            _pick(c, ["id", "firstName", "lastName", "assignedTo", "source", "dateAdded", "tags"])
+            {
+                "name": f"{c.get('firstName', '')} {c.get('lastName', '')}".strip(),
+                "source": c.get("source", ""),
+                "assignedTo": rep(c.get("assignedTo", "")),
+                "dateAdded": _fmt_date(c.get("dateAdded", "")),
+                "tags": c.get("tags", []),
+            }
             for c in data.get("contacts", [])
         ],
         "opportunities": [
-            _pick(o, ["id", "name", "monetaryValue", "status", "pipelineStageName",
-                      "assignedTo", "updatedAt", "expectedCloseDate"])
+            {
+                "name": o.get("name", ""),
+                "monetaryValue": o.get("monetaryValue", 0),
+                "status": o.get("status", ""),
+                "stage": o.get("pipelineStageName", ""),
+                "assignedTo": rep(o.get("assignedTo", "")),
+                "updatedAt": _fmt_date(o.get("updatedAt", "")),
+                "expectedCloseDate": _fmt_date(o.get("expectedCloseDate", "")),
+            }
             for o in data.get("opportunities", [])
         ],
         "users": [
-            _pick(u, ["id", "firstName", "lastName"])
+            {"name": f"{u.get('firstName', '')} {u.get('lastName', '')}".strip()}
             for u in data.get("users", [])
         ],
         "pipelines": [
