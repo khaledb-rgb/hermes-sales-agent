@@ -16,9 +16,9 @@ from github_client import save_report
 from telegram_client import send_error, send_message, send_report, send_typing
 
 _cache: dict = {"data": None, "ts": 0.0}
-_CACHE_TTL = 300  # 5 minutes
+_CACHE_TTL = 180  # 3 minutes — matches keepwarm cron interval
 
-_processed_updates: set = set()  # dedup Telegram retries
+_processed_updates: set = set()  # dedup Telegram retries within same instance
 _processed_lock = threading.Lock()
 
 
@@ -36,8 +36,7 @@ def _set_cache(data: dict) -> None:
 def _extract_question(text: str, entities: list) -> str:
     """
     Strip @mention entities from text using Telegram's entity offsets.
-    Works no matter where in the message the mention appears:
-    '@Bot question', 'question @Bot', 'question @Bot more'.
+    Works no matter where in the message the mention appears.
     Falls back to a simple regex if entities are missing.
     """
     mention_ents = sorted(
@@ -50,7 +49,6 @@ def _extract_question(text: str, entities: list) -> str:
         text = text[:start] + text[start + length:]
 
     if not mention_ents:
-        # Fallback: strip any @word (handles case where entities weren't sent)
         text = re.sub(r"@\w+", "", text)
 
     return text.strip()
@@ -65,12 +63,10 @@ def _handle_update(update: dict) -> None:
     if not text or not chat_id:
         return
 
-    # Detect entity types
     has_mention = any(e.get("type") == "mention" for e in entities)
     has_command = any(e.get("type") == "bot_command" for e in entities)
 
-    # /report command — also handles /report@BotName format used in multi-bot groups
-    base_cmd = text.split()[0].split("@")[0].lower()  # "/report@bot" → "/report"
+    base_cmd = text.split()[0].split("@")[0].lower()
     if base_cmd == "/report":
         send_message(chat_id, "_Generating daily report..._")
         data = fetch_all()
@@ -79,15 +75,12 @@ def _handle_update(update: dict) -> None:
         save_report(report)
         return
 
-    # Ignore all other slash commands
     if has_command:
         return
 
-    # Only respond when the bot is explicitly mentioned
     if not has_mention and "@" not in text:
         return
 
-    # Extract the actual question (strip @mentions wherever they appear)
     question = _extract_question(text, entities)
 
     if not question:
@@ -113,24 +106,25 @@ def _handle_update(update: dict) -> None:
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        """Keep-warm — also pre-fills GHL cache so Q&A requests are fast."""
+        """Keep-warm — warms GHL cache synchronously so Q&A requests are fast.
+
+        Must be synchronous: daemon threads are killed the moment do_GET returns,
+        so a background thread never actually fills the cache.
+        """
+        try:
+            _set_cache(fetch_for_qa())
+            body = b"OK - cache warmed"
+        except Exception as e:
+            print(f"[webhook] cache warm error: {e}")
+            body = b"OK - cache warm failed"
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"OK")
-        # Refresh cache in background so the next Q&A skips the GHL fetch
-        def _warm():
-            try:
-                _set_cache(fetch_for_qa())
-            except Exception as e:
-                print(f"[webhook] cache warm error: {e}")
-        threading.Thread(target=_warm, daemon=True).start()
+        self.wfile.write(body)
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
 
-        # Respond immediately — Vercel buffers until do_POST returns, so we
-        # spawn a background thread and return right away.
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -141,13 +135,13 @@ class handler(BaseHTTPRequestHandler):
             update_id = update.get("update_id")
             with _processed_lock:
                 if update_id in _processed_updates:
-                    return  # duplicate retry — drop silently
+                    return
                 _processed_updates.add(update_id)
                 if len(_processed_updates) > 500:
                     _processed_updates.clear()
-            _handle_update(update)  # synchronous — keeps Vercel function alive
+            _handle_update(update)
         except Exception as e:
             print(f"[webhook] error: {e}")
 
     def log_message(self, *args):
-        pass  # suppress built-in request logging
+        pass

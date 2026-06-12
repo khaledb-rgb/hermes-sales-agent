@@ -2,7 +2,7 @@ name: Keep Vercel Warm
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # every 5 minutes — prevents Python cold starts
+    - cron: "*/3 * * * *"   # every 3 minutes — warms GHL cache before it expires
 
 jobs:
   ping:
@@ -10,5 +10,5 @@ jobs:
     steps:
       - name: Ping webhook health check
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://hermes-sales-agent.vercel.app/api/webhook)
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 https://hermes-sales-agent.vercel.app/api/webhook)
           echo "Health check status: $STATUS"
