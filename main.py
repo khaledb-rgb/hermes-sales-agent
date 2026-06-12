@@ -48,7 +48,9 @@ def handle_message(text: str, chat_id: str) -> None:
         data = _get_data()
         answer = answer_question(text, data)
         if thinking_msg_id:
-            edit_message(chat_id, thinking_msg_id, answer)
+            if not edit_message(chat_id, thinking_msg_id, answer):
+                delete_message(chat_id, thinking_msg_id)
+                send_message(chat_id, answer)
         else:
             send_message(chat_id, answer)
     except Exception as e:

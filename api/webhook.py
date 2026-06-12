@@ -124,7 +124,9 @@ def _handle_update(update: dict) -> None:
     try:
         answer = answer_question(question, cached)
         if thinking_msg_id:
-            edit_message(chat_id, thinking_msg_id, answer)  # replace thinking msg in-place
+            if not edit_message(chat_id, thinking_msg_id, answer):
+                delete_message(chat_id, thinking_msg_id)
+                send_message(chat_id, answer)
         else:
             send_message(chat_id, answer)
     except Exception as e:

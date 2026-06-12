@@ -31,20 +31,26 @@ def send_message(chat_id: str, text: str) -> int | None:
     return message_id
 
 
-def edit_message(chat_id: str, message_id: int, text: str) -> None:
-    """Edit an existing message in-place (replaces thinking msg with the answer)."""
+def edit_message(chat_id: str, message_id: int, text: str) -> bool:
+    """Edit an existing message in-place. Returns True on success."""
     chunks = [text[i : i + _CHUNK_SIZE] for i in range(0, len(text), _CHUNK_SIZE)]
-    try:
-        requests.post(
-            f"{_BASE_URL}/editMessageText",
-            json={"chat_id": chat_id, "message_id": message_id,
-                  "text": chunks[0], "parse_mode": "Markdown"},
-        )
-    except Exception as e:
-        print(f"[telegram] could not edit message {message_id}: {e}")
-    # If answer is longer than one chunk, send the rest as new messages
-    for chunk in chunks[1:]:
-        send_message(chat_id, chunk)
+    ok = False
+    for parse_mode in ("Markdown", None):  # try Markdown first, fall back to plain
+        try:
+            payload = {"chat_id": chat_id, "message_id": message_id, "text": chunks[0]}
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+            resp = requests.post(f"{_BASE_URL}/editMessageText", json=payload, timeout=10)
+            ok = resp.json().get("ok", False)
+            if ok:
+                break
+            print(f"[telegram] editMessageText failed ({parse_mode}): {resp.json().get('description')}")
+        except Exception as e:
+            print(f"[telegram] editMessageText error: {e}")
+    if ok:
+        for chunk in chunks[1:]:
+            send_message(chat_id, chunk)
+    return ok
 
 
 def delete_message(chat_id: str, message_id: int) -> None:
