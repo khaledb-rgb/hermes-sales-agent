@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -155,8 +156,15 @@ def generate_report(data: dict) -> str:
 _TABLE_KEYWORDS = {"table", "tableau", "جدول", "tabela", "tabell", "teble"}
 
 
-def _wrap_tables(text: str) -> str:
-    """Guarantee every pipe table is inside a triple-backtick code fence."""
+_TS_RE = re.compile(r'(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}[\.\d]*Z?')
+
+
+def _clean_output(text: str) -> str:
+    """Strip time component from any ISO timestamp and wrap bare pipe tables in code fences."""
+    # 2026-06-12T16:14:28.130Z → 2026-06-12
+    text = _TS_RE.sub(r'\1', text)
+
+    # Wrap any pipe table not already inside a code block
     lines = text.split("\n")
     result, buf, in_code = [], [], False
     for line in lines:
@@ -195,7 +203,4 @@ def answer_question(question: str, data: dict) -> str:
             {"role": "user", "content": user_message},
         ],
     )
-    text = response.choices[0].message.content or ""
-    if wants_table:
-        text = _wrap_tables(text)
-    return text
+    return _clean_output(response.choices[0].message.content or "")
