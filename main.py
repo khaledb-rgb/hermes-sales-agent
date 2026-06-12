@@ -1,44 +1,37 @@
-import time
+from dotenv import load_dotenv
 
-from claude_agent import answer_question, generate_report
+load_dotenv()
+
+from claude_agent import generate_report
 from ghl_client import fetch_all
 from github_client import save_report
-from telegram_client import send_message, send_report, start_polling
-
-# GHL data cache — refreshed every 5 minutes
-_cache: dict = {"data": None, "ts": 0.0}
-_CACHE_TTL = 300
+from telegram_client import send_report
 
 
-def _get_data() -> dict:
-    if time.time() - _cache["ts"] > _CACHE_TTL:
-        print("[main] refreshing GHL data...")
-        _cache["data"] = fetch_all()
-        _cache["ts"] = time.time()
-        counts = {k: len(v) for k, v in _cache["data"].items()}
-        print(f"[main] data loaded: {counts}")
-    return _cache["data"]
+def run() -> None:
+    print("Fetching GHL data...")
+    data = fetch_all()
+    print(
+        f"Fetched: {len(data.get('contacts', []))} contacts, "
+        f"{len(data.get('opportunities', []))} opportunities, "
+        f"{len(data.get('appointments', []))} appointments"
+    )
 
+    print("Generating report with Hermes...")
+    report = generate_report(data)
+    print(f"Preview:\n{report[:300]}\n...")
 
-def handle_message(text: str, chat_id: str) -> None:
-    if text == "/report":
-        send_message(chat_id, "_Generating daily report..._")
-        data = fetch_all()  # always fresh for /report
-        _cache["data"] = data
-        _cache["ts"] = time.time()
-        report = generate_report(data)
-        send_report(report)
-        save_report(report)
-        return
+    print("Sending to Telegram...")
+    send_report(report)
 
-    send_message(chat_id, "_Hermes is thinking..._")
-    data = _get_data()
-    answer = answer_question(text, data)
-    send_message(chat_id, answer)
+    print("Saving to GitHub...")
+    save_report(report)
+
+    print("Done. Report delivered.")
 
 
 if __name__ == "__main__":
-    print("[main] Hermes starting up...")
-    # pre-load data on boot
-    _get_data()
-    start_polling(handle_message)
+    try:
+        run()
+    except Exception as e:
+        print(f"[hermes] failed: {e}")
