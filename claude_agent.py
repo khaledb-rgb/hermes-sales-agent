@@ -2,12 +2,12 @@ import json
 import os
 from pathlib import Path
 
-import anthropic
 from dotenv import load_dotenv
+from openai import OpenAI, OpenAIError
 
 load_dotenv()
 
-_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 _system_prompt_path = Path(__file__).parent / "prompts" / "system_prompt.txt"
 
 
@@ -19,15 +19,14 @@ def generate_report(data: dict) -> str:
     )
 
     try:
-        message = _client.messages.create(
-            model="claude-opus-4-6",
+        response = _client.chat.completions.create(
+            model="gpt-4o",
             max_tokens=2048,
-            system=system,
-            messages=[{"role": "user", "content": user_message}],
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_message},
+            ],
         )
-        return next(
-            (block.text for block in message.content if block.type == "text"),
-            "",
-        )
-    except anthropic.APIError as e:
+        return response.choices[0].message.content or ""
+    except OpenAIError as e:
         return f"[Hermes] API error: {e}"
