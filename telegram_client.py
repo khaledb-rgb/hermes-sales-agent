@@ -31,6 +31,22 @@ def send_message(chat_id: str, text: str) -> int | None:
     return message_id
 
 
+def edit_message(chat_id: str, message_id: int, text: str) -> None:
+    """Edit an existing message in-place (replaces thinking msg with the answer)."""
+    chunks = [text[i : i + _CHUNK_SIZE] for i in range(0, len(text), _CHUNK_SIZE)]
+    try:
+        requests.post(
+            f"{_BASE_URL}/editMessageText",
+            json={"chat_id": chat_id, "message_id": message_id,
+                  "text": chunks[0], "parse_mode": "Markdown"},
+        )
+    except Exception as e:
+        print(f"[telegram] could not edit message {message_id}: {e}")
+    # If answer is longer than one chunk, send the rest as new messages
+    for chunk in chunks[1:]:
+        send_message(chat_id, chunk)
+
+
 def delete_message(chat_id: str, message_id: int) -> None:
     try:
         requests.post(

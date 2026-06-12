@@ -10,7 +10,7 @@ load_dotenv()
 from claude_agent import answer_question, generate_report
 from ghl_client import fetch_all
 from github_client import save_report
-from telegram_client import delete_message, send_error, send_message, send_report, start_polling
+from telegram_client import delete_message, edit_message, send_error, send_message, send_report, start_polling
 
 # GHL data cache — refreshed every 5 minutes
 _cache: dict = {"data": None, "ts": 0.0}
@@ -48,8 +48,9 @@ def handle_message(text: str, chat_id: str) -> None:
         data = _get_data()
         answer = answer_question(text, data)
         if thinking_msg_id:
-            delete_message(chat_id, thinking_msg_id)
-        send_message(chat_id, answer)
+            edit_message(chat_id, thinking_msg_id, answer)
+        else:
+            send_message(chat_id, answer)
     except Exception as e:
         if thinking_msg_id:
             delete_message(chat_id, thinking_msg_id)

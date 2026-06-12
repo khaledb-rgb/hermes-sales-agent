@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from claude_agent import answer_question, generate_report
 from ghl_client import fetch_all, fetch_for_qa
 from github_client import save_report
-from telegram_client import delete_message, send_error, send_message, send_report
+from telegram_client import delete_message, edit_message, send_error, send_message, send_report
 
 _cache: dict = {"data": None, "ts": 0.0}
 _CACHE_TTL = 300  # 5 minutes
@@ -124,8 +124,9 @@ def _handle_update(update: dict) -> None:
     try:
         answer = answer_question(question, cached)
         if thinking_msg_id:
-            delete_message(chat_id, thinking_msg_id)
-        send_message(chat_id, answer)
+            edit_message(chat_id, thinking_msg_id, answer)  # replace thinking msg in-place
+        else:
+            send_message(chat_id, answer)
     except Exception as e:
         if thinking_msg_id:
             delete_message(chat_id, thinking_msg_id)
@@ -166,8 +167,7 @@ class handler(BaseHTTPRequestHandler):
                 _processed_updates.add(update_id)
                 if len(_processed_updates) > 500:
                     _processed_updates.clear()
-            # Non-daemon thread: Fluid Compute keeps the instance alive until it finishes
-            threading.Thread(target=_handle_update, args=(update,), daemon=False).start()
+            _handle_update(update)  # synchronous — keeps Vercel function alive
         except Exception as e:
             print(f"[webhook] error: {e}")
 
