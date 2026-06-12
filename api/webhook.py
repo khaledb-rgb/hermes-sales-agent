@@ -65,8 +65,12 @@ def _handle_update(update: dict) -> None:
     if has_command:
         return
 
+    # Only respond when the bot is explicitly mentioned
+    if not has_mention and "@" not in text:
+        return
+
     # Extract the actual question (strip @mentions wherever they appear)
-    question = _extract_question(text, entities) if (has_mention or "@" in text) else text
+    question = _extract_question(text, entities)
 
     if not question:
         return
