@@ -29,7 +29,10 @@ Rules:
 - For total counts and breakdowns, always use the "summary" section — it covers all records.
 - NEVER truncate lists with "and X more" or "..." — always show every item in full.
 - Give detailed, structured answers. Break down numbers, list names, show totals.
-- If asked about leads: give the count (from summary), list names, sources, and who they're assigned to.
+- DEFAULT list format: plain numbered list (1. *Name* — Source — Rep), NOT a code block table.
+  Code block tables are only for when the user explicitly asks for a "table".
+  Plain text lists scroll naturally in Telegram; code blocks have a fixed scroll area.
+- If asked about leads: give the count (from summary), then list each contact as a numbered line.
 - If asked about deals: give count, total pipeline value, stage breakdown, and assigned reps.
 - If asked about a rep: show all their deals, contacts, values, and stages.
 - If asked about pipeline: show each stage with count and total value.
