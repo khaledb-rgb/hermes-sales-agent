@@ -11,7 +11,7 @@ _client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 _system_prompt_path = Path(__file__).parent / "prompts" / "system_prompt.txt"
 
 _QA_SYSTEM = """You are Hermes, an AI assistant embedded in a sales team's Telegram group.
-You have access to live CRM data from GoHighLevel: contacts, opportunities, users, pipelines, conversations, and invoices.
+You have access to live CRM data from GoHighLevel: contacts, opportunities, users, and pipelines.
 
 Rules:
 - Answer only from the data provided. Never invent or estimate figures.
@@ -25,12 +25,36 @@ Rules:
 - If the data does not contain enough information to answer, say so clearly."""
 
 
-def _slim(data: dict) -> dict:
-    """Strip each record to essential fields only to stay within token limits."""
+def _pick(record: dict, keys: list) -> dict:
+    return {k: v for k, v in record.items() if k in keys and v not in (None, "", [], {})}
 
-    def _pick(record: dict, keys: list) -> dict:
-        return {k: v for k, v in record.items() if k in keys and v not in (None, "", [], {})}
 
+def _slim_for_qa(data: dict) -> dict:
+    """Minimal context for Q&A — contacts, opportunities, users, pipeline names only."""
+    return {
+        "contacts": [
+            _pick(c, ["id", "firstName", "lastName", "assignedTo", "source", "dateAdded", "tags"])
+            for c in data.get("contacts", [])[:100]
+        ],
+        "opportunities": [
+            _pick(o, ["id", "name", "monetaryValue", "status", "pipelineStageName",
+                      "assignedTo", "updatedAt", "expectedCloseDate"])
+            for o in data.get("opportunities", [])[:100]
+        ],
+        "users": [
+            _pick(u, ["id", "firstName", "lastName"])
+            for u in data.get("users", [])
+        ],
+        "pipelines": [
+            {"name": p.get("name"),
+             "stages": [s.get("name") for s in p.get("stages", [])]}
+            for p in data.get("pipelines", [])
+        ],
+    }
+
+
+def _slim_for_report(data: dict) -> dict:
+    """Fuller context for the daily report."""
     return {
         "contacts": [
             _pick(c, ["id", "firstName", "lastName", "email", "phone", "type",
@@ -43,21 +67,16 @@ def _slim(data: dict) -> dict:
             for o in data.get("opportunities", [])
         ],
         "users": [
-            _pick(u, ["id", "firstName", "lastName", "email", "role"])
+            _pick(u, ["id", "firstName", "lastName", "email"])
             for u in data.get("users", [])
         ],
         "pipelines": [
-            {"id": p.get("id"), "name": p.get("name"),
-             "stages": [{"id": s.get("id"), "name": s.get("name")} for s in p.get("stages", [])]}
+            {"name": p.get("name"),
+             "stages": [s.get("name") for s in p.get("stages", [])]}
             for p in data.get("pipelines", [])
         ],
-        "conversations": [
-            _pick(c, ["id", "contactId", "assignedTo", "lastMessageBody",
-                      "lastMessageDate", "unreadCount"])
-            for c in data.get("conversations", [])[:20]
-        ],
         "invoices": [
-            _pick(i, ["id", "status", "total", "dueDate", "contactId"])
+            _pick(i, ["id", "status", "total", "dueDate"])
             for i in data.get("invoices", [])
         ],
     }
@@ -67,7 +86,7 @@ def generate_report(data: dict) -> str:
     system = _system_prompt_path.read_text(encoding="utf-8")
     user_message = (
         "Here is today's CRM data. Generate the sales report:\n\n"
-        + json.dumps(_slim(data), ensure_ascii=False, default=str)
+        + json.dumps(_slim_for_report(data), ensure_ascii=False, default=str)
     )
     try:
         response = _client.chat.completions.create(
@@ -86,12 +105,12 @@ def generate_report(data: dict) -> str:
 def answer_question(question: str, data: dict) -> str:
     user_message = (
         "Here is the current CRM data:\n\n"
-        + json.dumps(_slim(data), ensure_ascii=False, default=str)
+        + json.dumps(_slim_for_qa(data), ensure_ascii=False, default=str)
         + f"\n\nQuestion: {question}"
     )
     response = _client.chat.completions.create(
         model="gpt-4o-mini",
-        max_tokens=1024,
+        max_tokens=1500,
         messages=[
             {"role": "system", "content": _QA_SYSTEM},
             {"role": "user", "content": user_message},
