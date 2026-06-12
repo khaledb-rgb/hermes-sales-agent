@@ -1,11 +1,11 @@
 import os
+
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
 BASE_URL = "https://services.leadconnectorhq.com"
-
 API_KEY = os.getenv("GHL_API_KEY")
 LOCATION_ID = os.getenv("GHL_LOCATION_ID")
 COMPANY_ID = os.getenv("GHL_COMPANY_ID")
@@ -17,66 +17,55 @@ HEADERS = {
 }
 
 
-def get_contacts() -> list:
+def _get(path: str, params: dict = None) -> dict:
     try:
-        response = requests.get(
-            f"{BASE_URL}/contacts/",
-            headers=HEADERS,
-            params={"locationId": LOCATION_ID, "limit": 100},
-        )
-        response.raise_for_status()
-        return response.json().get("contacts", [])
+        r = requests.get(f"{BASE_URL}{path}", headers=HEADERS, params=params or {})
+        r.raise_for_status()
+        return r.json()
     except requests.RequestException as e:
-        print(f"[ghl] get_contacts error: {e}")
-        return []
+        print(f"[ghl] GET {path} error: {e}")
+        return {}
+
+
+def get_contacts() -> list:
+    return _get("/contacts/", {"locationId": LOCATION_ID, "limit": 100}).get("contacts", [])
 
 
 def get_opportunities() -> list:
-    try:
-        response = requests.get(
-            f"{BASE_URL}/opportunities/search",
-            headers=HEADERS,
-            params={"location_id": LOCATION_ID, "limit": 100},
-        )
-        response.raise_for_status()
-        return response.json().get("opportunities", [])
-    except requests.RequestException as e:
-        print(f"[ghl] get_opportunities error: {e}")
-        return []
-
-
-def get_appointments() -> list:
-    try:
-        response = requests.get(
-            f"{BASE_URL}/calendars/appointments",
-            headers=HEADERS,
-            params={"locationId": LOCATION_ID, "limit": 100},
-        )
-        response.raise_for_status()
-        return response.json().get("appointments", [])
-    except requests.RequestException as e:
-        print(f"[ghl] get_appointments error: {e}")
-        return []
+    return _get("/opportunities/search", {"location_id": LOCATION_ID, "limit": 100}).get("opportunities", [])
 
 
 def get_users() -> list:
-    try:
-        response = requests.get(
-            f"{BASE_URL}/users/",
-            headers=HEADERS,
-            params={"companyId": COMPANY_ID},
-        )
-        response.raise_for_status()
-        return response.json().get("users", [])
-    except requests.RequestException as e:
-        print(f"[ghl] get_users error: {e}")
-        return []
+    return _get("/users/", {"locationId": LOCATION_ID}).get("users", [])
+
+
+def get_pipelines() -> list:
+    return _get("/opportunities/pipelines", {"locationId": LOCATION_ID}).get("pipelines", [])
+
+
+def get_conversations() -> list:
+    return _get("/conversations/search", {"locationId": LOCATION_ID, "limit": 50}).get("conversations", [])
+
+
+def get_invoices() -> list:
+    return _get("/invoices/", {
+        "altId": LOCATION_ID,
+        "altType": "location",
+        "offset": "0",
+        "limit": "50",
+    }).get("invoices", [])
+
+
+def get_contact_appointments(contact_id: str) -> list:
+    return _get(f"/contacts/{contact_id}/appointments").get("events", [])
 
 
 def fetch_all() -> dict:
     return {
         "contacts": get_contacts(),
         "opportunities": get_opportunities(),
-        "appointments": get_appointments(),
         "users": get_users(),
+        "pipelines": get_pipelines(),
+        "conversations": get_conversations(),
+        "invoices": get_invoices(),
     }
