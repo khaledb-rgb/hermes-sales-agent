@@ -1,3 +1,6 @@
+import os
+import signal
+import threading
 import time
 
 from dotenv import load_dotenv
@@ -25,7 +28,6 @@ def _get_data() -> dict:
 
 
 def handle_message(text: str, chat_id: str) -> None:
-    # strip bot mention if present (e.g. "@HermesBot what are today's leads?")
     if text.startswith("@"):
         text = text.split(" ", 1)[1].strip() if " " in text else ""
     if not text:
@@ -51,6 +53,13 @@ def handle_message(text: str, chat_id: str) -> None:
 
 
 if __name__ == "__main__":
+    # When running in GitHub Actions, exit cleanly after MAX_RUNTIME_SECONDS
+    # so the next scheduled run can take over with no gap.
+    max_runtime = int(os.getenv("MAX_RUNTIME_SECONDS", 0))
+    if max_runtime:
+        print(f"[main] will exit after {max_runtime // 60} minutes")
+        threading.Timer(max_runtime, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+
     print("[main] Hermes starting up...")
     _get_data()
     start_polling(handle_message)
