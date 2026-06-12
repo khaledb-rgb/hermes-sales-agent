@@ -2,6 +2,7 @@ import time
 
 from claude_agent import answer_question, generate_report
 from ghl_client import fetch_all
+from github_client import save_report
 from telegram_client import send_message, send_report, start_polling
 
 # GHL data cache — refreshed every 5 minutes
@@ -27,6 +28,7 @@ def handle_message(text: str, chat_id: str) -> None:
         _cache["ts"] = time.time()
         report = generate_report(data)
         send_report(report)
+        save_report(report)
         return
 
     send_message(chat_id, "_Hermes is thinking..._")
