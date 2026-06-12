@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler
 
 # Project root is the parent of the api/ directory
@@ -39,11 +40,28 @@ def _handle_update(update: dict) -> None:
         save_report(report)
         return
 
-    # Q&A: send "thinking" placeholder, fetch GHL data, call OpenAI, send answer
-    send_message(chat_id, "_Hermes is thinking..._")
+    # Q&A: kick off GHL fetch and "thinking" message in parallel, then call OpenAI
+    ghl_result: list = [None]
+    ghl_error: list = [None]
+
+    def _fetch():
+        try:
+            ghl_result[0] = fetch_for_qa()
+        except Exception as exc:
+            ghl_error[0] = exc
+
+    fetch_thread = threading.Thread(target=_fetch, daemon=True)
+    fetch_thread.start()
+
+    send_message(chat_id, "_Hermes is thinking..._")  # runs while GHL fetches
+
+    fetch_thread.join(timeout=8)
+    if ghl_error[0]:
+        send_error(str(ghl_error[0]))
+        return
+
     try:
-        data = fetch_for_qa()
-        answer = answer_question(text, data)
+        answer = answer_question(text, ghl_result[0] or {})
         send_message(chat_id, answer)
     except Exception as e:
         send_error(str(e))

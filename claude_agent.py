@@ -110,7 +110,7 @@ def answer_question(question: str, data: dict) -> str:
     )
     response = _client.chat.completions.create(
         model="gpt-4o-mini",
-        max_tokens=1500,
+        max_tokens=600,
         messages=[
             {"role": "system", "content": _QA_SYSTEM},
             {"role": "user", "content": user_message},
