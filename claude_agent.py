@@ -12,23 +12,31 @@ import calendly_client
 
 load_dotenv()
 
-# LLM provider — Gemini (GEMINI_API_KEY) is primary; falls back to OpenAI
-# (OPENAI_API_KEY) only if Gemini's key is absent. Both speak the OpenAI
-# chat-completions API; Gemini just needs a custom base_url.
-_GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-if _GEMINI_KEY:
-    _client = OpenAI(
-        api_key=_GEMINI_KEY,
-        base_url=os.getenv(
-            "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/"
-        ),
-    )
-    _REPORT_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-    _QA_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-else:
-    _client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    _REPORT_MODEL = os.getenv("REPORT_MODEL", "gpt-4o")
-    _QA_MODEL = os.getenv("QA_MODEL", "gpt-4o-mini")
+# LLM provider chain — tried in order at request time, so a rate-limit/credit
+# error (429/402) on one provider automatically falls through to the next.
+# Gemini is primary (free tier can 429); OpenAI is the safety net. Both speak
+# the OpenAI chat-completions API; Gemini just needs a custom base_url.
+def _build_providers() -> list:
+    providers = []
+    gem = os.getenv("GEMINI_API_KEY")
+    if gem:
+        providers.append((
+            "gemini",
+            OpenAI(api_key=gem, base_url=os.getenv(
+                "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")),
+            os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        ))
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if openai_key:
+        providers.append((
+            "openai",
+            OpenAI(api_key=openai_key),
+            os.getenv("QA_MODEL", "gpt-4o-mini"),
+        ))
+    return providers
+
+
+_PROVIDERS = _build_providers()
 
 _system_prompt_path = Path(__file__).parent / "prompts" / "system_prompt.txt"
 
@@ -623,15 +631,21 @@ def answer_question(question: str, data: dict) -> str:
         + json.dumps(_slim_for_qa(data), ensure_ascii=False, default=str)
         + f"\n\nQuestion: {question}{suffix}"
     )
-    try:
-        response = _client.chat.completions.create(
-            model=_QA_MODEL,
-            max_tokens=4000,
-            messages=[
-                {"role": "system", "content": _QA_SYSTEM},
-                {"role": "user", "content": user_message},
-            ],
-        )
-        return _clean_output(response.choices[0].message.content or "")
-    except OpenAIError as e:
-        raise RuntimeError(f"OpenAI error: {e}") from e
+    if not _PROVIDERS:
+        raise RuntimeError("No LLM provider configured (set GEMINI_API_KEY or OPENAI_API_KEY).")
+
+    messages = [
+        {"role": "system", "content": _QA_SYSTEM},
+        {"role": "user", "content": user_message},
+    ]
+    errors = []
+    for name, client, model in _PROVIDERS:
+        try:
+            response = client.chat.completions.create(
+                model=model, max_tokens=4000, messages=messages,
+            )
+            return _clean_output(response.choices[0].message.content or "")
+        except OpenAIError as e:
+            print(f"[agent] {name} ({model}) failed, trying next provider: {e}")
+            errors.append(f"{name}: {e}")
+    raise RuntimeError("All LLM providers failed -> " + " | ".join(errors))
