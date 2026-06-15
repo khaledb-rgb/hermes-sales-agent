@@ -1,4 +1,5 @@
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -21,18 +22,25 @@ _REQUEST_TIMEOUT = 8  # seconds per individual GHL API call
 
 
 def _get(path: str, params: dict = None) -> dict:
-    try:
-        r = requests.get(
-            f"{BASE_URL}{path}",
-            headers=HEADERS,
-            params=params or {},
-            timeout=_REQUEST_TIMEOUT,
-        )
-        r.raise_for_status()
-        return r.json()
-    except requests.RequestException as e:
-        print(f"[ghl] GET {path} error: {e}")
-        return {}
+    for attempt in range(4):
+        try:
+            r = requests.get(
+                f"{BASE_URL}{path}",
+                headers=HEADERS,
+                params=params or {},
+                timeout=_REQUEST_TIMEOUT,
+            )
+            if r.status_code == 429 and attempt < 3:
+                wait = float(r.headers.get("Retry-After", 2 ** attempt))
+                print(f"[ghl] 429 on {path} — retrying in {wait:.0f}s")
+                time.sleep(wait)
+                continue
+            r.raise_for_status()
+            return r.json()
+        except requests.RequestException as e:
+            print(f"[ghl] GET {path} error: {e}")
+            return {}
+    return {}
 
 
 def get_contacts(max_pages: int = 0) -> list:

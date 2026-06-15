@@ -182,31 +182,86 @@ def _slim_for_qa(data: dict) -> dict:
     }
 
 
+def _today_iso() -> str:
+    return _now().strftime("%Y-%m-%d")
+
+
+def _days_since(date_str: str, today: str) -> int | None:
+    """Whole days between an ISO date and today; None if unparseable."""
+    if not date_str or not today:
+        return None
+    try:
+        d = datetime.strptime(date_str[:10], "%Y-%m-%d")
+        t = datetime.strptime(today, "%Y-%m-%d")
+        return (t - d).days
+    except ValueError:
+        return None
+
+
 def _slim_for_report(data: dict) -> dict:
-    """Fuller context for the daily report."""
+    """Compact, pre-computed report context.
+
+    Sending every contact/opportunity overflowed the model context (the old
+    version requested tens of millions of tokens and always failed). Instead we
+    compute the KPIs here over ALL records and pass a small summary plus only
+    today's new-lead list, so the model just formats — payload stays tiny
+    regardless of CRM size.
+    """
+    today = _today_iso()
+
+    user_map = {
+        u["id"]: f"{u.get('firstName', '')} {u.get('lastName', '')}".strip()
+        for u in data.get("users", [])
+        if u.get("id")
+    }
+
+    def rep(uid: str) -> str:
+        return user_map.get(uid, "") or "Unassigned"
+
+    contacts = [
+        {
+            "name": f"{c.get('firstName', '')} {c.get('lastName', '')}".strip() or "Unnamed",
+            "source": c.get("source") or "Unknown",
+            "rep": rep(c.get("assignedTo", "")),
+            "date": _fmt_date(c.get("dateAdded", "")),
+        }
+        for c in data.get("contacts", [])
+    ]
+    new_today = [c for c in contacts if c["date"] == today]
+
+    opps = [
+        {
+            "value": o.get("monetaryValue", 0) or 0,
+            "status": (o.get("status") or "").lower(),
+            "rep": rep(o.get("assignedTo", "")),
+            "updated": _fmt_date(o.get("updatedAt", "")),
+        }
+        for o in data.get("opportunities", [])
+    ]
+    open_opps = [o for o in opps if o["status"] == "open"]
+    won = [o for o in opps if o["status"] == "won"]
+    stale = [o for o in open_opps if (_days_since(o["updated"], today) or 0) > 5]
+
+    top_rep = Counter(o["rep"] for o in open_opps).most_common(1)
+    source_pool = new_today or contacts
+    top_source = Counter(c["source"] for c in source_pool).most_common(1)
+
+    summary = {
+        "report_scope": "today" if new_today else "all-time (no contacts dated today)",
+        "new_leads": len(new_today),
+        "open_deals": len(open_opps),
+        "pipeline_value": sum(o["value"] for o in open_opps),
+        "won_deals": len(won),
+        "stale_deals": len(stale),
+        "top_rep": ({"name": top_rep[0][0], "open_deals": top_rep[0][1]} if top_rep else None),
+        "top_source": (top_source[0][0] if top_source else None),
+    }
+
     return {
-        "contacts": [
-            _pick(c, ["id", "firstName", "lastName", "email", "phone", "type",
-                      "source", "assignedTo", "dateAdded", "tags", "leadSource"])
-            for c in data.get("contacts", [])
-        ],
-        "opportunities": [
-            _pick(o, ["id", "name", "monetaryValue", "status", "pipelineStageName",
-                      "assignedTo", "updatedAt", "expectedCloseDate", "contactId"])
-            for o in data.get("opportunities", [])
-        ],
-        "users": [
-            _pick(u, ["id", "firstName", "lastName", "email"])
-            for u in data.get("users", [])
-        ],
-        "pipelines": [
-            {"name": p.get("name"),
-             "stages": [s.get("name") for s in p.get("stages", [])]}
-            for p in data.get("pipelines", [])
-        ],
-        "invoices": [
-            _pick(i, ["id", "status", "total", "dueDate"])
-            for i in data.get("invoices", [])
+        "summary": summary,
+        "new_leads": [
+            {"name": c["name"], "source": c["source"], "rep": c["rep"]}
+            for c in new_today[:100]
         ],
     }
 
