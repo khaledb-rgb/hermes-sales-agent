@@ -623,7 +623,14 @@ def _clean_output(text: str) -> str:
     return "\n".join(result)
 
 
-def answer_question(question: str, data: dict) -> str:
+def answer_question(question: str, data: dict, history: list | None = None) -> str:
+    """Answer a CRM question.
+
+    history (optional) is a list of prior {role, content} turns for this chat —
+    plain text only, no CRM data — so the model can resolve follow-ups like
+    "what about his email?" or "which of those are stale?". The current question
+    always carries fresh CRM data; prior turns give conversational continuity.
+    """
     wants_table = any(kw in question.lower() for kw in _TABLE_KEYWORDS)
     suffix = _TABLE_INSTRUCTION if wants_table else ""
     user_message = (
@@ -634,10 +641,10 @@ def answer_question(question: str, data: dict) -> str:
     if not _PROVIDERS:
         raise RuntimeError("No LLM provider configured (set GEMINI_API_KEY or OPENAI_API_KEY).")
 
-    messages = [
-        {"role": "system", "content": _QA_SYSTEM},
-        {"role": "user", "content": user_message},
-    ]
+    messages = [{"role": "system", "content": _QA_SYSTEM}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user_message})
     errors = []
     for name, client, model in _PROVIDERS:
         try:

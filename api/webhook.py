@@ -21,6 +21,38 @@ _CACHE_TTL = 180  # 3 minutes — matches keepwarm cron interval
 _processed_updates: set = set()  # dedup Telegram retries within same instance
 _processed_lock = threading.Lock()
 
+# Per-chat conversation memory (best-effort, in-process). Lets the bot resolve
+# follow-ups like "what about his email?". Lost on cold start; the keepwarm cron
+# keeps instances warm. Stores only text turns — never the large CRM payload.
+_history: dict = {}  # chat_id -> {"turns": [{role, content}, ...], "ts": float}
+_history_lock = threading.Lock()
+_HISTORY_TTL = 1800        # 30 min — forget a chat's context after inactivity
+_HISTORY_MAX_TURNS = 8     # keep the last 8 messages (~4 Q&A pairs)
+
+
+def _get_history(chat_id: str) -> list:
+    with _history_lock:
+        entry = _history.get(chat_id)
+        if not entry or time.time() - entry["ts"] > _HISTORY_TTL:
+            return []
+        return list(entry["turns"])
+
+
+def _append_history(chat_id: str, question: str, answer: str) -> None:
+    with _history_lock:
+        entry = _history.get(chat_id)
+        fresh = entry and time.time() - entry["ts"] <= _HISTORY_TTL
+        turns = (entry["turns"] if fresh else []) + [
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": answer},
+        ]
+        _history[chat_id] = {"turns": turns[-_HISTORY_MAX_TURNS:], "ts": time.time()}
+
+
+def _clear_history(chat_id: str) -> None:
+    with _history_lock:
+        _history.pop(chat_id, None)
+
 
 def _get_cached_data() -> dict | None:
     if _cache["data"] is not None and time.time() - _cache["ts"] < _CACHE_TTL:
@@ -67,6 +99,11 @@ def _handle_update(update: dict) -> None:
     has_command = any(e.get("type") == "bot_command" for e in entities)
 
     base_cmd = text.split()[0].split("@")[0].lower()
+    if base_cmd in ("/reset", "/clear", "/forget"):
+        _clear_history(chat_id)
+        send_message(chat_id, "_Conversation memory cleared._")
+        return
+
     if base_cmd == "/report":
         send_message(chat_id, "_Generating daily report..._")
         # Use the warm cache or the bounded fetch — fetch_all() can exceed
@@ -101,8 +138,10 @@ def _handle_update(update: dict) -> None:
             return
 
     try:
-        answer = answer_question(question, cached)
+        history = _get_history(chat_id)
+        answer = answer_question(question, cached, history=history)
         send_message(chat_id, answer)
+        _append_history(chat_id, question, answer)
     except Exception as e:
         send_error(str(e))
 
