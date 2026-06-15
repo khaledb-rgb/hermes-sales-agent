@@ -31,10 +31,9 @@ jobs:
           GHL_API_KEY: ${{ secrets.GHL_API_KEY }}
           GHL_LOCATION_ID: ${{ secrets.GHL_LOCATION_ID }}
           GHL_COMPANY_ID: ${{ secrets.GHL_COMPANY_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-2.5-flash
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          REPORT_MODEL: deepseek/deepseek-chat-v3.1
-          QA_MODEL: deepseek/deepseek-chat-v3.1
           REPORT_TIMEZONE: America/Chicago
           CALENDLY_API_KEY: ${{ secrets.CALENDLY_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

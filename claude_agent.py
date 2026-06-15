@@ -12,12 +12,10 @@ import calendly_client
 
 load_dotenv()
 
-# LLM provider — priority: Gemini (GEMINI_API_KEY) > OpenRouter (OPENROUTER_API_KEY)
-# > OpenAI. All three speak the OpenAI chat-completions API; Gemini and OpenRouter
-# just need a custom base_url. Each branch carries its own default model so the
-# fallbacks stay self-consistent.
+# LLM provider — Gemini (GEMINI_API_KEY) is primary; falls back to OpenAI
+# (OPENAI_API_KEY) only if Gemini's key is absent. Both speak the OpenAI
+# chat-completions API; Gemini just needs a custom base_url.
 _GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-_OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
 if _GEMINI_KEY:
     _client = OpenAI(
         api_key=_GEMINI_KEY,
@@ -27,17 +25,6 @@ if _GEMINI_KEY:
     )
     _REPORT_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     _QA_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-elif _OPENROUTER_KEY:
-    _client = OpenAI(
-        api_key=_OPENROUTER_KEY,
-        base_url=os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
-        default_headers={
-            "HTTP-Referer": "https://github.com/khaledb-rgb/hermes-sales-agent",
-            "X-Title": "Hermes Sales Agent",
-        },
-    )
-    _REPORT_MODEL = os.getenv("REPORT_MODEL", "deepseek/deepseek-chat-v3.1")
-    _QA_MODEL = os.getenv("QA_MODEL", "deepseek/deepseek-chat-v3.1")
 else:
     _client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     _REPORT_MODEL = os.getenv("REPORT_MODEL", "gpt-4o")
