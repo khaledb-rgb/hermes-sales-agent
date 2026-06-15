@@ -2,8 +2,10 @@ name: Hermes Daily Report
 
 on:
   schedule:
-    - cron: "0 8 * * *"   # every day at 08:00 UTC
-  workflow_dispatch:        # allow manual trigger from GitHub UI
+    # 13:00 & 14:00 UTC bracket 08:00 America/Chicago across DST. run_report.py
+    # proceeds only at 08:00 Central, so it fires exactly once per day year-round.
+    - cron: "0 13,14 * * *"
+  workflow_dispatch:        # allow manual trigger from GitHub UI (always runs)
 
 permissions:
   contents: write           # needed to save report files to the repo
@@ -33,6 +35,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           REPORT_MODEL: deepseek/deepseek-chat-v3.1
           QA_MODEL: deepseek/deepseek-chat-v3.1
+          REPORT_TIMEZONE: America/Chicago
           CALENDLY_API_KEY: ${{ secrets.CALENDLY_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
