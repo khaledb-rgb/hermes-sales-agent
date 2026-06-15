@@ -76,6 +76,10 @@ Rules:
 - If asked about leads: give the count (from summary), then list each contact as a numbered line.
 - If asked about deals: give count, stage breakdown, and assigned reps (no dollar values).
 - If asked about a rep: show all their deals, contacts, and stages.
+- "Stale" leads/deals = OPEN opportunities not updated recently. Each opportunity has a
+  `daysSinceUpdate` field — use it. Default threshold is >5 days when the user doesn't give
+  one; if they say "stale" with a number (e.g. "2 days"), use that. summary.opportunities.stale
+  is the >5-day count. Never claim staleness can't be determined — daysSinceUpdate is always there.
 - Each opportunity has a `pipeline` and a `stage` field. When asked about a specific \
 pipeline (e.g. "New Sales Pipeline"), filter opportunities by their `pipeline` value.
 - If asked about pipeline: show each stage with its count (use summary.opportunities.by_stage
@@ -181,6 +185,7 @@ def _slim_for_qa(data: dict) -> dict:
         return user_map.get(uid, uid or "")
 
     stage_name, stage_pipeline = _stage_maps(data.get("pipelines", []))
+    today = _today_iso()
 
     # Build full contact list (slim fields) for summary stats
     all_contacts = [
@@ -205,6 +210,7 @@ def _slim_for_qa(data: dict) -> dict:
             "pipeline": stage_pipeline.get(o.get("pipelineStageId", ""), ""),
             "assignedTo": rep(o.get("assignedTo", "")),
             "updatedAt": _fmt_date(o.get("updatedAt", "")),
+            "daysSinceUpdate": _days_since(_fmt_date(o.get("updatedAt", "")), today),
             "expectedCloseDate": _fmt_date(o.get("expectedCloseDate", "")),
         }
         for o in data.get("opportunities", [])
@@ -218,6 +224,7 @@ def _slim_for_qa(data: dict) -> dict:
     opp_by_stage = dict(Counter(o["stage"] for o in open_opps if o["stage"]).most_common())
     opp_by_pipeline = dict(Counter(o["pipeline"] for o in open_opps if o["pipeline"]).most_common())
     opp_by_rep = dict(Counter(o["assignedTo"] for o in open_opps).most_common())
+    stale_opps = [o for o in open_opps if (o["daysSinceUpdate"] or 0) > 5]
 
     # Exact whole-CRM totals come from the search meta (data.*_total). The
     # breakdowns/lists below are computed only over the most-recent records
@@ -243,6 +250,7 @@ def _slim_for_qa(data: dict) -> dict:
             "total": opps_total,
             "loaded": len(all_opps),
             "open": len(open_opps),
+            "stale": len(stale_opps),
             "by_pipeline": opp_by_pipeline,
             "by_stage": opp_by_stage,
             "by_rep": opp_by_rep,

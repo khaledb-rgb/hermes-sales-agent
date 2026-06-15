@@ -48,20 +48,27 @@ def get_contacts(max_pages: int = 0) -> list:
 
     max_pages=0 means fetch all pages. max_pages=N stops after N pages.
     """
-    results, after, page_count = [], None, 0
+    results, page_count = [], 0
+    start_after = start_after_id = None
     while True:
         params = {"locationId": LOCATION_ID, "limit": 100}
-        if after:
-            params["startAfterId"] = after
+        if start_after_id:
+            # GHL's cursor needs BOTH startAfter (ms timestamp) and startAfterId;
+            # sending only one returns the same first page forever.
+            params["startAfter"] = start_after
+            params["startAfterId"] = start_after_id
         data = _get("/contacts/", params)
         page = data.get("contacts", [])
         results.extend(page)
         page_count += 1
         meta = data.get("meta", {})
-        after = meta.get("startAfterId") or meta.get("nextPageUrl")
-        if not after or len(page) < 100:
+        start_after = meta.get("startAfter")
+        start_after_id = meta.get("startAfterId")
+        if not start_after_id or len(page) < 100:
             break
         if max_pages and page_count >= max_pages:
+            break
+        if page_count >= 500:  # safety cap (~50k records) against runaway loops
             break
     return results
 
@@ -71,20 +78,27 @@ def get_opportunities(max_pages: int = 0) -> list:
 
     max_pages=0 means fetch all pages. max_pages=N stops after N pages.
     """
-    results, after, page_count = [], None, 0
+    results, page_count = [], 0
+    start_after = start_after_id = None
     while True:
         params = {"location_id": LOCATION_ID, "limit": 100}
-        if after:
-            params["startAfterId"] = after
+        if start_after_id:
+            # GHL's cursor needs BOTH startAfter (ms timestamp) and startAfterId;
+            # sending only one returns the same first page forever.
+            params["startAfter"] = start_after
+            params["startAfterId"] = start_after_id
         data = _get("/opportunities/search", params)
         page = data.get("opportunities", [])
         results.extend(page)
         page_count += 1
         meta = data.get("meta", {})
-        after = meta.get("startAfterId") or meta.get("nextPageUrl")
-        if not after or len(page) < 100:
+        start_after = meta.get("startAfter")
+        start_after_id = meta.get("startAfterId")
+        if not start_after_id or len(page) < 100:
             break
         if max_pages and page_count >= max_pages:
+            break
+        if page_count >= 500:  # safety cap (~50k records) against runaway loops
             break
     return results
 
