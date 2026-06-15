@@ -2,7 +2,7 @@ import json
 import os
 import re
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -38,9 +38,20 @@ _QA_SYSTEM = """You are Hermes, an AI assistant embedded in a sales team's Teleg
 You have access to live CRM data from GoHighLevel: contacts, opportunities, users, and pipelines.
 
 The data has two parts:
-- "summary": pre-computed aggregates covering ALL records (use these for totals and counts).
-- "contacts" / "opportunities": the most recent individual records (up to 300 contacts, 200 opportunities).
-  If you need to list specific names, use these. The summary totals are authoritative for overall counts.
+- "summary": pre-computed aggregates. Read summary.coverage carefully — it tells you
+  exactly what is exact vs. partial.
+  • summary.*.total = EXACT whole-CRM counts. Use these for "how many total…" questions.
+  • summary.*.loaded = how many individual records were actually loaded this request.
+  • All breakdowns (by_source, by_stage, by_pipeline, by_rep) are computed ONLY over the
+    loaded (most-recent) records — they are a recent-records view, NOT the whole CRM.
+- "contacts" / "opportunities": the individual loaded records (most recent first). Use these
+  to list names and look up details. They do NOT contain older records.
+- "conversations": recent message threads (contact, lastMessage date, type, direction, unread
+  count). Use for "what did we last say to / hear from X" and unread/follow-up questions.
+- "appointments": calendar events from yesterday through ~3 weeks ahead (title, start as
+  'YYYY-MM-DD HH:MM', status, rep). Use for "who's booked today/this week". Keep the start
+  time exactly as given — do not drop the time.
+- "invoices": invoices when present (often empty). Use for billing/payment questions.
 
 OUTPUT MEDIUM: Your replies are sent via the Telegram Bot API with parse_mode=Markdown. \
 Telegram renders triple-backtick fenced blocks as monospace code — ASCII tables display perfectly inside them. \
@@ -48,16 +59,31 @@ You have NO technical limitation on producing tables. Always output them directl
 
 Rules:
 - Answer only from the data provided. Never invent or estimate figures.
-- For total counts and breakdowns, always use the "summary" section — it covers all records.
+- For "how many total" questions, use summary.*.total (exact). For breakdowns/lists, use the
+  loaded records and SAY they reflect the most-recent records loaded, not the whole CRM, when
+  total > loaded.
+- If asked for a specific person/deal and it is NOT in the loaded records, do NOT say it
+  doesn't exist. Say it isn't among the most-recent records loaded and may be older — offer
+  what you can (e.g. the exact total, or matching loaded records).
+- Contacts include email, phone, and company when available — use them for lookup questions.
 - NEVER truncate lists with "and X more" or "..." — always show every item in full.
 - Give detailed, structured answers. Break down numbers, list names, show totals.
 - DEFAULT list format: plain numbered list (1. *Name* — Source — Rep), NOT a code block table.
   Code block tables are only for when the user explicitly asks for a "table".
   Plain text lists scroll naturally in Telegram; code blocks have a fixed scroll area.
+- We do NOT track deal/monetary value — never report pipeline $ or deal amounts; focus on
+  counts, leads, pipelines, and stages.
 - If asked about leads: give the count (from summary), then list each contact as a numbered line.
-- If asked about deals: give count, total pipeline value, stage breakdown, and assigned reps.
-- If asked about a rep: show all their deals, contacts, values, and stages.
-- If asked about pipeline: show each stage with count and total value.
+- If asked about deals: give count, stage breakdown, and assigned reps (no dollar values).
+- If asked about a rep: show all their deals, contacts, and stages.
+- Each opportunity has a `pipeline` and a `stage` field. When asked about a specific \
+pipeline (e.g. "New Sales Pipeline"), filter opportunities by their `pipeline` value.
+- If asked about pipeline: show each stage with its count (use summary.opportunities.by_stage
+  and by_pipeline).
+- If asked about messages/conversations: use "conversations" — show contact, last message date,
+  direction (inbound/outbound), and flag unread threads for follow-up.
+- If asked about appointments/bookings: use "appointments" — list title, date+time, rep, and
+  status; for "today" filter start to today's date.
 - Always end with a short *Summary* line with the key takeaway.
 - Use Telegram Markdown: *bold* for names/numbers/totals, `code` for stages/IDs, _italic_ for labels.
 - If the data does not contain enough information to answer, say so clearly."""
@@ -84,9 +110,57 @@ def _pick(record: dict, keys: list) -> dict:
     return {k: v for k, v in record.items() if k in keys and v not in (None, "", [], {})}
 
 
-def _fmt_date(val: str) -> str:
-    """2026-06-12T16:14:28.130Z → 2026-06-12"""
+def _stage_maps(pipelines: list) -> tuple[dict, dict]:
+    """Build {stageId: stageName} and {stageId: pipelineName} from pipeline defs.
+
+    The GHL /opportunities/search endpoint returns pipelineStageId / pipelineId
+    (UUIDs), NOT human-readable names. Without these maps every opportunity's
+    'stage' resolves to blank, which is why no stage/pipeline ever showed up.
+    """
+    stage_name, stage_pipeline = {}, {}
+    for p in pipelines:
+        pname = p.get("name", "")
+        for s in p.get("stages", []):
+            sid = s.get("id")
+            if sid:
+                stage_name[sid] = s.get("name", "")
+                stage_pipeline[sid] = pname
+    return stage_name, stage_pipeline
+
+
+def _epoch_to_dt(val) -> datetime | None:
+    """Epoch seconds or milliseconds → UTC datetime. GHL returns some dates
+    (e.g. conversations.lastMessageDate) as epoch ms ints, not ISO strings."""
+    try:
+        ts = float(val)
+        ts = ts / 1000 if ts > 1e11 else ts  # treat large values as milliseconds
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
+def _fmt_date(val) -> str:
+    """2026-06-12T16:14:28.130Z → 2026-06-12 (also accepts epoch ms ints)."""
+    if isinstance(val, (int, float)):
+        dt = _epoch_to_dt(val)
+        return dt.strftime("%Y-%m-%d") if dt else ""
     return val[:10] if val and "T" in val else (val or "")
+
+
+def _fmt_dt(val) -> str:
+    """2026-06-12T16:14:28Z → '2026-06-12 16:14' (also accepts epoch ms ints).
+
+    Uses a space (not 'T') on purpose: _clean_output strips the time off any
+    'T'-form ISO timestamp the model echoes, which would erase appointment
+    times. The space form survives that pass.
+    """
+    if isinstance(val, (int, float)):
+        dt = _epoch_to_dt(val)
+        return dt.strftime("%Y-%m-%d %H:%M") if dt else ""
+    if not val or "T" not in val:
+        return val or ""
+    d, t = val.split("T", 1)
+    return f"{d} {t[:5]}"
 
 
 def _slim_for_qa(data: dict) -> dict:
@@ -106,11 +180,16 @@ def _slim_for_qa(data: dict) -> dict:
     def rep(uid: str) -> str:
         return user_map.get(uid, uid or "")
 
+    stage_name, stage_pipeline = _stage_maps(data.get("pipelines", []))
+
     # Build full contact list (slim fields) for summary stats
     all_contacts = [
         {
             "name": f"{c.get('firstName', '')} {c.get('lastName', '')}".strip(),
             "source": c.get("source", "") or "Unknown",
+            "email": c.get("email", "") or "",
+            "phone": c.get("phone", "") or "",
+            "company": c.get("companyName", "") or "",
             "assignedTo": rep(c.get("assignedTo", "")),
             "dateAdded": _fmt_date(c.get("dateAdded", "")),
             "tags": c.get("tags", []),
@@ -121,9 +200,9 @@ def _slim_for_qa(data: dict) -> dict:
     all_opps = [
         {
             "name": o.get("name", ""),
-            "monetaryValue": o.get("monetaryValue", 0) or 0,
             "status": o.get("status", ""),
-            "stage": o.get("pipelineStageName", ""),
+            "stage": stage_name.get(o.get("pipelineStageId", ""), ""),
+            "pipeline": stage_pipeline.get(o.get("pipelineStageId", ""), ""),
             "assignedTo": rep(o.get("assignedTo", "")),
             "updatedAt": _fmt_date(o.get("updatedAt", "")),
             "expectedCloseDate": _fmt_date(o.get("expectedCloseDate", "")),
@@ -136,27 +215,37 @@ def _slim_for_qa(data: dict) -> dict:
     contact_by_rep = dict(Counter(c["assignedTo"] for c in all_contacts).most_common())
 
     open_opps = [o for o in all_opps if o["status"] == "open"]
-    opp_by_stage = dict(Counter(o["stage"] for o in open_opps).most_common())
+    opp_by_stage = dict(Counter(o["stage"] for o in open_opps if o["stage"]).most_common())
+    opp_by_pipeline = dict(Counter(o["pipeline"] for o in open_opps if o["pipeline"]).most_common())
     opp_by_rep = dict(Counter(o["assignedTo"] for o in open_opps).most_common())
-    opp_value_by_rep = {}
-    for o in open_opps:
-        opp_value_by_rep[o["assignedTo"]] = (
-            opp_value_by_rep.get(o["assignedTo"], 0) + o["monetaryValue"]
-        )
+
+    # Exact whole-CRM totals come from the search meta (data.*_total). The
+    # breakdowns/lists below are computed only over the most-recent records
+    # actually loaded this request, so we expose both numbers and a note.
+    contacts_total = data.get("contacts_total") or len(all_contacts)
+    opps_total = data.get("opportunities_total") or len(all_opps)
 
     summary = {
+        "coverage": (
+            f"`total` fields are EXACT whole-CRM counts. All breakdowns "
+            f"(by_source, by_stage, by_pipeline, by_rep) and the individual "
+            f"contact/opportunity lists are computed from only the {len(all_contacts)} "
+            f"most-recent contacts and {len(all_opps)} most-recent opportunities "
+            f"loaded this request - older records are not in those lists."
+        ),
         "contacts": {
-            "total": len(all_contacts),
+            "total": contacts_total,
+            "loaded": len(all_contacts),
             "by_source": contact_by_source,
             "by_rep": contact_by_rep,
         },
         "opportunities": {
-            "total": len(all_opps),
+            "total": opps_total,
+            "loaded": len(all_opps),
             "open": len(open_opps),
-            "open_value": sum(o["monetaryValue"] for o in open_opps),
+            "by_pipeline": opp_by_pipeline,
             "by_stage": opp_by_stage,
             "by_rep": opp_by_rep,
-            "value_by_rep": opp_value_by_rep,
         },
     }
 
@@ -169,10 +258,70 @@ def _slim_for_qa(data: dict) -> dict:
         all_opps, key=lambda o: o["updatedAt"], reverse=True
     )[:200]
 
+    # Conversations — most recent message threads (for "what did we last say to X")
+    conversations = sorted(
+        (
+            {
+                "contact": c.get("fullName") or c.get("contactName") or "",
+                "company": c.get("companyName", "") or "",
+                "lastMessage": _fmt_date(c.get("lastMessageDate", "")),
+                "type": c.get("lastMessageType", "") or "",
+                "direction": c.get("lastMessageDirection", "") or "",
+                "unread": c.get("unreadCount", 0) or 0,
+            }
+            for c in data.get("conversations", [])
+        ),
+        key=lambda c: c["lastMessage"],
+        reverse=True,
+    )
+
+    # Appointments — calendar events in the fetch window, soonest first.
+    today = _today_iso()
+    appointments = sorted(
+        (
+            {
+                "title": e.get("title", "") or "",
+                "start": _fmt_dt(e.get("startTime", "")),
+                "status": e.get("appointmentStatus") or e.get("appoinmentStatus") or "",
+                "rep": rep(e.get("assignedUserId", "")),
+            }
+            for e in data.get("appointments", [])
+        ),
+        key=lambda a: a["start"],
+    )
+
+    # Invoices — best-effort field mapping (shape unverified; usually empty here).
+    invoices = [
+        {
+            "name": i.get("name") or i.get("title") or i.get("invoiceNumber") or "",
+            "status": i.get("status", "") or "",
+            "total": i.get("total", 0) or i.get("amountDue", 0) or 0,
+            "contact": (i.get("contactDetails") or {}).get("name", "")
+            or i.get("contactName", "")
+            or "",
+            "due": _fmt_date(i.get("dueDate", "")),
+        }
+        for i in data.get("invoices", [])
+    ]
+
+    summary["conversations"] = {
+        "loaded": len(conversations),
+        "unread_threads": sum(1 for c in conversations if c["unread"]),
+    }
+    summary["appointments"] = {
+        "loaded": len(appointments),
+        "upcoming": sum(1 for a in appointments if a["start"][:10] >= today),
+        "window": "yesterday through ~3 weeks ahead",
+    }
+    summary["invoices"] = {"loaded": len(invoices)}
+
     return {
         "summary": summary,
         "contacts": recent_contacts,
         "opportunities": recent_opps,
+        "conversations": conversations,
+        "appointments": appointments,
+        "invoices": invoices,
         "users": [
             {"name": f"{u.get('firstName', '')} {u.get('lastName', '')}".strip()}
             for u in data.get("users", [])
@@ -248,18 +397,34 @@ def _slim_for_report(data: dict) -> dict:
             deduped.append(c)
     new_today = deduped
 
+    stage_name, stage_pipeline = _stage_maps(data.get("pipelines", []))
+
     opps = [
         {
-            "value": o.get("monetaryValue", 0) or 0,
             "status": (o.get("status") or "").lower(),
             "rep": rep(o.get("assignedTo", "")),
             "updated": _fmt_date(o.get("updatedAt", "")),
+            "stage": _safe(stage_name.get(o.get("pipelineStageId", ""), "")),
+            "pipeline": _safe(stage_pipeline.get(o.get("pipelineStageId", ""), "")),
         }
         for o in data.get("opportunities", [])
     ]
     open_opps = [o for o in opps if o["status"] == "open"]
     won = [o for o in opps if o["status"] == "won"]
     stale = [o for o in open_opps if (_days_since(o["updated"], today) or 0) > 5]
+
+    by_pipeline = [
+        {"name": n, "count": c}
+        for n, c in Counter(
+            o["pipeline"] for o in open_opps if o["pipeline"]
+        ).most_common(_PIPELINES_SHOWN)
+    ]
+    by_stage = [
+        {"name": n, "count": c}
+        for n, c in Counter(
+            o["stage"] for o in open_opps if o["stage"]
+        ).most_common(_STAGES_SHOWN)
+    ]
 
     top_rep = Counter(o["rep"] for o in open_opps if o["rep"] != "Unassigned").most_common(1)
     source_pool = new_today or contacts
@@ -269,7 +434,8 @@ def _slim_for_report(data: dict) -> dict:
         "report_scope": "today" if new_today else "all-time (no contacts dated today)",
         "new_leads": len(new_today),
         "open_deals": len(open_opps),
-        "pipeline_value": sum(o["value"] for o in open_opps),
+        "by_pipeline": by_pipeline,
+        "by_stage": by_stage,
         "won_deals": len(won),
         "stale_deals": len(stale),
         "top_rep": ({"name": top_rep[0][0], "open_deals": top_rep[0][1]} if top_rep else None),
@@ -308,10 +474,8 @@ def _report_clock() -> tuple[str, str]:
 
 
 _LEADS_SHOWN = 40  # cap the new-leads list; show "+N more" beyond this
-
-
-def _money(n) -> str:
-    return f"${int(n):,}" if n else "—"
+_PIPELINES_SHOWN = 8  # cap the open-deals-by-pipeline breakdown
+_STAGES_SHOWN = 10  # cap the open-deals-by-stage breakdown
 
 
 def _format_report(slim: dict, report_date: str, sent_time: str) -> str:
@@ -326,25 +490,32 @@ def _format_report(slim: dict, report_date: str, sent_time: str) -> str:
     footer = f"_Sent by Hermes · {sent_time}_"
 
     # --- Message 1: KPIs ---
-    # With Calendly data, use the Bookings | New leads | Show rate row and demote
-    # Open deals / Pipeline to data rows; otherwise fall back to CRM-only KPIs.
-    header = ["📊 *Daily CRM + Calendly Report*", f"_{report_date}_", "", "———", ""]
+    # With Calendly data, lead with Bookings | New leads | Show rate and demote
+    # Open deals to a data row; otherwise use the CRM-only New leads | Open deals row.
     if "bookings_today" in s:
+        title = "📊 *Daily CRM + Calendly Report*"
         show = f"{s['show_rate']}%" if s.get("show_rate") is not None else "—"
-        msg1 = header + [
+        msg1 = [title, f"_{report_date}_", "", "———", ""] + [
             "`Bookings` | `New leads` | `Show rate`",
             f"   {s['bookings_today']} | {total_new} | {show}",
         ]
         rows = [f"• Open deals: {s['open_deals']}"]
     else:
-        msg1 = header + [
-            "`New leads` | `Open deals` | `Pipeline $`",
-            f"   {total_new} | {s['open_deals']} | {_money(s['pipeline_value'])}",
+        title = "📊 *Daily CRM Report*"
+        msg1 = [title, f"_{report_date}_", "", "———", ""] + [
+            "`New leads` | `Open deals`",
+            f"   {total_new} | {s['open_deals']}",
         ]
         rows = []
 
-    if s.get("pipeline_value"):
-        rows.append(f"• Pipeline added: {_money(s['pipeline_value'])}")
+    # Pipeline + stage breakdowns (open deals).
+    if s.get("by_pipeline"):
+        msg1 += ["", "———", "", "*Open deals by pipeline:*"]
+        msg1 += [f"• {p['name']} — {p['count']}" for p in s["by_pipeline"]]
+    if s.get("by_stage"):
+        msg1 += ["", "———", "", "*Top stages:*"]
+        msg1 += [f"• {st['name']} — {st['count']}" for st in s["by_stage"]]
+
     if s.get("top_rep"):
         rows.append(f"• Top rep: *{s['top_rep']['name']}* — {s['top_rep']['open_deals']} deals")
     if s.get("top_source"):

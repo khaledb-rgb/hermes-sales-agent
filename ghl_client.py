@@ -89,6 +89,22 @@ def get_opportunities(max_pages: int = 0) -> list:
     return results
 
 
+def get_total(resource: str) -> int:
+    """Exact record count for a resource, read from the search endpoint's meta.
+
+    Costs a single page fetch (limit=1) rather than paginating the whole CRM, so
+    the bot can report true totals even though it only loads the most-recent N
+    records for listing. Returns 0 if the count is unavailable.
+    """
+    if resource == "opportunities":
+        data = _get("/opportunities/search", {"location_id": LOCATION_ID, "limit": 1})
+    elif resource == "contacts":
+        data = _get("/contacts/", {"locationId": LOCATION_ID, "limit": 1})
+    else:
+        return 0
+    return data.get("meta", {}).get("total", 0) or 0
+
+
 def get_users() -> list:
     return _get("/users/", {"locationId": LOCATION_ID}).get("users", [])
 
@@ -114,22 +130,57 @@ def get_contact_appointments(contact_id: str) -> list:
     return _get(f"/contacts/{contact_id}/appointments").get("events", [])
 
 
+def get_appointments(days_back: int = 1, days_ahead: int = 21) -> list:
+    """Calendar events across all location users in a time window.
+
+    GHL's /calendars/events requires a userId/calendarId. There are ~17 users
+    vs. ~120 calendars here, so we fan out by user (in parallel) and dedup by
+    event id. Window defaults to yesterday..3 weeks ahead — enough for "who's
+    booked today/this week" without pulling appointment history.
+    """
+    now = int(time.time() * 1000)
+    start = now - days_back * 86_400_000
+    end = now + days_ahead * 86_400_000
+    users = get_users()
+
+    def fetch(uid: str) -> list:
+        return _get(
+            "/calendars/events",
+            {"locationId": LOCATION_ID, "userId": uid, "startTime": start, "endTime": end},
+        ).get("events", [])
+
+    seen, events = set(), []
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        for evs in executor.map(lambda u: fetch(u.get("id", "")), users):
+            for e in evs:
+                eid = e.get("id")
+                if eid and eid not in seen:
+                    seen.add(eid)
+                    events.append(e)
+    return events
+
+
 def fetch_for_qa() -> dict:
     """Fetch Q&A-relevant GHL data in parallel.
 
-    Contacts and opportunities are capped at 3 pages (300 records each)
-    so a cold-start response fits well within Telegram's 60s read timeout.
-    The claude_agent layer computes summary stats from these records and
-    sends only the most recent 300/200 to OpenAI anyway.
+    Contacts and opportunities are capped at 5 pages (500 records each) — the
+    most-recent records, used for listing and breakdowns. True totals come
+    separately and cheaply from get_total() (the search meta), so the bot can
+    report exact whole-CRM counts without paginating ~163k records live.
     """
     fetchers = {
-        "contacts": lambda: get_contacts(max_pages=3),
-        "opportunities": lambda: get_opportunities(max_pages=2),
+        "contacts": lambda: get_contacts(max_pages=5),
+        "opportunities": lambda: get_opportunities(max_pages=5),
         "users": get_users,
         "pipelines": get_pipelines,
+        "contacts_total": lambda: get_total("contacts"),
+        "opportunities_total": lambda: get_total("opportunities"),
+        "conversations": get_conversations,
+        "invoices": get_invoices,
+        "appointments": get_appointments,
     }
     results = {}
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {executor.submit(fn): key for key, fn in fetchers.items()}
         for future in as_completed(futures):
             key = futures[future]
