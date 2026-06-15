@@ -12,11 +12,22 @@ import calendly_client
 
 load_dotenv()
 
-# LLM provider — if OPENROUTER_API_KEY is set, route through OpenRouter (DeepSeek
-# V3.1 by default); otherwise fall back to OpenAI directly. The openai SDK speaks
-# to both since OpenRouter is OpenAI-compatible.
+# LLM provider — priority: Gemini (GEMINI_API_KEY) > OpenRouter (OPENROUTER_API_KEY)
+# > OpenAI. All three speak the OpenAI chat-completions API; Gemini and OpenRouter
+# just need a custom base_url. Each branch carries its own default model so the
+# fallbacks stay self-consistent.
+_GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 _OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
-if _OPENROUTER_KEY:
+if _GEMINI_KEY:
+    _client = OpenAI(
+        api_key=_GEMINI_KEY,
+        base_url=os.getenv(
+            "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/"
+        ),
+    )
+    _REPORT_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    _QA_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+elif _OPENROUTER_KEY:
     _client = OpenAI(
         api_key=_OPENROUTER_KEY,
         base_url=os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
