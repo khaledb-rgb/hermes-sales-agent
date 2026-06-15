@@ -8,6 +8,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI, OpenAIError
 
+import calendly_client
+
 load_dotenv()
 
 # LLM provider — if OPENROUTER_API_KEY is set, route through OpenRouter (DeepSeek
@@ -324,23 +326,29 @@ def _format_report(slim: dict, report_date: str, sent_time: str) -> str:
     footer = f"_Sent by Hermes · {sent_time}_"
 
     # --- Message 1: KPIs ---
-    msg1 = [
-        "📊 *Daily CRM + Calendly Report*",
-        f"_{report_date}_",
-        "",
-        "———",
-        "",
-        "`New leads` | `Open deals` | `Pipeline $`",
-        f"   {total_new} | {s['open_deals']} | {_money(s['pipeline_value'])}",
-    ]
+    # With Calendly data, use the Bookings | New leads | Show rate row and demote
+    # Open deals / Pipeline to data rows; otherwise fall back to CRM-only KPIs.
+    header = ["📊 *Daily CRM + Calendly Report*", f"_{report_date}_", "", "———", ""]
+    if "bookings_today" in s:
+        show = f"{s['show_rate']}%" if s.get("show_rate") is not None else "—"
+        msg1 = header + [
+            "`Bookings` | `New leads` | `Show rate`",
+            f"   {s['bookings_today']} | {total_new} | {show}",
+        ]
+        rows = [f"• Open deals: {s['open_deals']}"]
+    else:
+        msg1 = header + [
+            "`New leads` | `Open deals` | `Pipeline $`",
+            f"   {total_new} | {s['open_deals']} | {_money(s['pipeline_value'])}",
+        ]
+        rows = []
 
-    rows = []
+    if s.get("pipeline_value"):
+        rows.append(f"• Pipeline added: {_money(s['pipeline_value'])}")
     if s.get("top_rep"):
         rows.append(f"• Top rep: *{s['top_rep']['name']}* — {s['top_rep']['open_deals']} deals")
     if s.get("top_source"):
         rows.append(f"• Top lead source: *{s['top_source']}*")
-    if s.get("pipeline_value"):
-        rows.append(f"• Pipeline added: {_money(s['pipeline_value'])}")
     if rows:
         msg1 += ["", "———", ""] + rows
 
@@ -384,8 +392,15 @@ def _format_report(slim: dict, report_date: str, sent_time: str) -> str:
 
 
 def generate_report(data: dict) -> str:
+    slim = _slim_for_report(data)
+    try:
+        cal = calendly_client.fetch_summary()
+        if cal:
+            slim["summary"].update(cal)
+    except Exception as e:  # Calendly is best-effort — never block the report
+        print(f"[agent] calendly summary skipped: {e}")
     report_date, sent_time = _report_clock()
-    return _format_report(_slim_for_report(data), report_date, sent_time)
+    return _format_report(slim, report_date, sent_time)
 
 
 _TABLE_KEYWORDS = {"table", "tableau", "جدول", "tabela", "tabell", "teble"}
