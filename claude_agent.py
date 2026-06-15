@@ -391,14 +391,18 @@ def _format_report(slim: dict, report_date: str, sent_time: str) -> str:
     return "\n".join(msg1) + "\n---SPLIT---\n" + "\n".join(msg2)
 
 
-def generate_report(data: dict) -> str:
+def generate_report(data: dict, include_calendly: bool = True) -> str:
+    """Build the daily report. include_calendly adds Bookings/Show-rate KPIs but
+    costs extra Calendly API calls — the daily GitHub Action keeps it on; the
+    interactive webhook /report turns it off so group replies stay fast."""
     slim = _slim_for_report(data)
-    try:
-        cal = calendly_client.fetch_summary()
-        if cal:
-            slim["summary"].update(cal)
-    except Exception as e:  # Calendly is best-effort — never block the report
-        print(f"[agent] calendly summary skipped: {e}")
+    if include_calendly:
+        try:
+            cal = calendly_client.fetch_summary()
+            if cal:
+                slim["summary"].update(cal)
+        except Exception as e:  # Calendly is best-effort — never block the report
+            print(f"[agent] calendly summary skipped: {e}")
     report_date, sent_time = _report_clock()
     return _format_report(slim, report_date, sent_time)
 

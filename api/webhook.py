@@ -73,7 +73,7 @@ def _handle_update(update: dict) -> None:
         # Vercel's function timeout under GHL rate-limiting. The full-data report
         # is produced by the daily GitHub Action (run_report.py).
         data = _get_cached_data() or fetch_for_qa()
-        report = generate_report(data)
+        report = generate_report(data, include_calendly=False)  # keep replies fast
         send_report(report)
         save_report(archive_text(report))
         return
