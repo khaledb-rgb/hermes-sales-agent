@@ -11,9 +11,9 @@ from http.server import BaseHTTPRequestHandler
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from claude_agent import answer_question, generate_report
-from ghl_client import fetch_all, fetch_for_qa
+from ghl_client import fetch_for_qa
 from github_client import save_report
-from telegram_client import send_error, send_message, send_report, send_typing
+from telegram_client import archive_text, send_error, send_message, send_report, send_typing
 
 _cache: dict = {"data": None, "ts": 0.0}
 _CACHE_TTL = 180  # 3 minutes — matches keepwarm cron interval
@@ -69,10 +69,13 @@ def _handle_update(update: dict) -> None:
     base_cmd = text.split()[0].split("@")[0].lower()
     if base_cmd == "/report":
         send_message(chat_id, "_Generating daily report..._")
-        data = fetch_all()
+        # Use the warm cache or the bounded fetch — fetch_all() can exceed
+        # Vercel's function timeout under GHL rate-limiting. The full-data report
+        # is produced by the daily GitHub Action (run_report.py).
+        data = _get_cached_data() or fetch_for_qa()
         report = generate_report(data)
         send_report(report)
-        save_report(report)
+        save_report(archive_text(report))
         return
 
     if has_command:
