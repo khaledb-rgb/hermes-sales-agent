@@ -33,17 +33,37 @@ def send_typing(chat_id: str) -> None:
         pass
 
 
+def _post_chunk(chat_id: str, chunk: str) -> int | None:
+    """Send one chunk as Markdown; if Telegram can't parse it, resend as plain text.
+
+    Real CRM data (names/sources with _, *, [, `) can break Telegram's legacy
+    Markdown parser and return HTTP 400. Falling back to plain text guarantees the
+    message is always delivered rather than lost.
+    """
+    for parse_mode in ("Markdown", None):
+        payload = {"chat_id": chat_id, "text": chunk}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        response = requests.post(f"{_BASE_URL}/sendMessage", json=payload)
+        if response.ok:
+            return response.json().get("result", {}).get("message_id")
+        if parse_mode:  # Markdown rejected — log and retry as plain text
+            try:
+                desc = response.json().get("description")
+            except Exception:
+                desc = response.text[:200]
+            print(f"[telegram] Markdown send failed ({desc}) — resending as plain text")
+            continue
+        response.raise_for_status()  # plain text also failed: a real error
+    return None
+
+
 def send_message(chat_id: str, text: str) -> int | None:
     """Send a message and return the message_id of the last sent chunk."""
     chunks = [text[i : i + _CHUNK_SIZE] for i in range(0, len(text), _CHUNK_SIZE)]
     message_id = None
     for index, chunk in enumerate(chunks, start=1):
-        response = requests.post(
-            f"{_BASE_URL}/sendMessage",
-            json={"chat_id": chat_id, "text": chunk, "parse_mode": "Markdown"},
-        )
-        response.raise_for_status()
-        message_id = response.json().get("result", {}).get("message_id")
+        message_id = _post_chunk(chat_id, chunk)
         if len(chunks) > 1:
             print(f"[telegram] sent chunk {index}/{len(chunks)}")
     return message_id
@@ -103,8 +123,9 @@ def send_report(text: str) -> None:
 
 
 def archive_text(text: str) -> str:
-    """Collapse the multi-message split marker into one clean document for saving."""
-    return _SPLIT_RE.sub("———", text).strip()
+    """Collapse the multi-message split marker into one clean document for saving,
+    and drop the Telegram-only underscore escaping so the saved file reads cleanly."""
+    return _SPLIT_RE.sub("———", text).strip().replace("\\_", "_")
 
 
 def get_chat_id() -> None:

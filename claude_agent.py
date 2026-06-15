@@ -198,6 +198,15 @@ def _days_since(date_str: str, today: str) -> int | None:
         return None
 
 
+# Characters that break Telegram's legacy Markdown parser when they appear in
+# data values (names, sources). Neutralized so the report renders cleanly.
+_MD_BREAK = str.maketrans({"_": " ", "*": " ", "`": "'", "[": "(", "]": ")"})
+
+
+def _safe(s: str) -> str:
+    return (s or "").translate(_MD_BREAK).strip()
+
+
 def _slim_for_report(data: dict) -> dict:
     """Compact, pre-computed report context.
 
@@ -216,18 +225,26 @@ def _slim_for_report(data: dict) -> dict:
     }
 
     def rep(uid: str) -> str:
-        return user_map.get(uid, "") or "Unassigned"
+        return _safe(user_map.get(uid, "")) or "Unassigned"
 
     contacts = [
         {
-            "name": f"{c.get('firstName', '')} {c.get('lastName', '')}".strip() or "Unnamed",
-            "source": c.get("source") or "Unknown",
+            "name": _safe(f"{c.get('firstName', '')} {c.get('lastName', '')}".strip()) or "Unnamed",
+            "source": _safe(c.get("source")) or "Unknown",
             "rep": rep(c.get("assignedTo", "")),
             "date": _fmt_date(c.get("dateAdded", "")),
         }
         for c in data.get("contacts", [])
     ]
     new_today = [c for c in contacts if c["date"] == today]
+    # dedup identical contacts (CRM sometimes has repeats) by name/source/rep
+    seen, deduped = set(), []
+    for c in new_today:
+        key = (c["name"], c["source"], c["rep"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(c)
+    new_today = deduped
 
     opps = [
         {
@@ -261,7 +278,7 @@ def _slim_for_report(data: dict) -> dict:
         "summary": summary,
         "new_leads": [
             {"name": c["name"], "source": c["source"], "rep": c["rep"]}
-            for c in new_today[:100]
+            for c in new_today[:_LEADS_SHOWN]
         ],
     }
 
@@ -288,27 +305,87 @@ def _report_clock() -> tuple[str, str]:
     return header_date, footer_time
 
 
+_LEADS_SHOWN = 40  # cap the new-leads list; show "+N more" beyond this
+
+
+def _money(n) -> str:
+    return f"${int(n):,}" if n else "—"
+
+
+def _format_report(slim: dict, report_date: str, sent_time: str) -> str:
+    """Build the two-message Telegram report deterministically from pre-computed
+    data. No LLM — the template is fixed and the figures are already computed, so
+    this is exact, properly escaped, and free of the duplication/Markdown issues
+    an LLM introduces on long data lists.
+    """
+    s = slim["summary"]
+    leads = slim["new_leads"]
+    total_new = s["new_leads"]
+    footer = f"_Sent by Hermes · {sent_time}_"
+
+    # --- Message 1: KPIs ---
+    msg1 = [
+        "📊 *Daily CRM + Calendly Report*",
+        f"_{report_date}_",
+        "",
+        "———",
+        "",
+        "`New leads` | `Open deals` | `Pipeline $`",
+        f"   {total_new} | {s['open_deals']} | {_money(s['pipeline_value'])}",
+    ]
+
+    rows = []
+    if s.get("top_rep"):
+        rows.append(f"• Top rep: *{s['top_rep']['name']}* — {s['top_rep']['open_deals']} deals")
+    if s.get("top_source"):
+        rows.append(f"• Top lead source: *{s['top_source']}*")
+    if s.get("pipeline_value"):
+        rows.append(f"• Pipeline added: {_money(s['pipeline_value'])}")
+    if rows:
+        msg1 += ["", "———", ""] + rows
+
+    tags = []
+    if s.get("won_deals"):
+        tags.append(f"#closed_{s['won_deals']}")
+    if s.get("stale_deals"):
+        tags.append(f"#followup_{s['stale_deals']}")
+    if total_new:
+        tags.append(f"#new_{total_new}")
+    if tags:
+        # Escape the underscores so Telegram's Markdown doesn't read them as
+        # italics (#new_43 would otherwise open an unclosed entity and 400).
+        msg1 += ["", "  ".join(tags).replace("_", "\\_")]
+    msg1 += ["", footer]
+
+    # --- Message 2: new leads ---
+    if leads:
+        lines = [
+            f"{i}. *{l['name']}* — {l['source']} — {l['rep']}"
+            for i, l in enumerate(leads, 1)
+        ]
+        if total_new > len(leads):
+            lines.append(f"_+{total_new - len(leads)} more_")
+        body = "\n".join(lines)
+    else:
+        body = "_No new leads today._"
+
+    msg2 = [
+        "🧲 *New Leads*",
+        f"_{report_date}_",
+        "",
+        "———",
+        "",
+        body,
+        "",
+        footer,
+    ]
+
+    return "\n".join(msg1) + "\n---SPLIT---\n" + "\n".join(msg2)
+
+
 def generate_report(data: dict) -> str:
-    system = _system_prompt_path.read_text(encoding="utf-8")
     report_date, sent_time = _report_clock()
-    user_message = (
-        f"REPORT DATE (use verbatim in the header date line): {report_date}\n"
-        f"SENT TIME (use verbatim in the footer timestamp): {sent_time}\n\n"
-        "Here is today's CRM data. Generate the sales report:\n\n"
-        + json.dumps(_slim_for_report(data), ensure_ascii=False, default=str)
-    )
-    try:
-        response = _client.chat.completions.create(
-            model=_REPORT_MODEL,
-            max_tokens=2048,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_message},
-            ],
-        )
-        return response.choices[0].message.content or ""
-    except OpenAIError as e:
-        return f"[Hermes] API error: {e}"
+    return _format_report(_slim_for_report(data), report_date, sent_time)
 
 
 _TABLE_KEYWORDS = {"table", "tableau", "جدول", "tabela", "tabell", "teble"}
