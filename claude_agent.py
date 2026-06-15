@@ -261,7 +261,7 @@ def _slim_for_report(data: dict) -> dict:
     won = [o for o in opps if o["status"] == "won"]
     stale = [o for o in open_opps if (_days_since(o["updated"], today) or 0) > 5]
 
-    top_rep = Counter(o["rep"] for o in open_opps).most_common(1)
+    top_rep = Counter(o["rep"] for o in open_opps if o["rep"] != "Unassigned").most_common(1)
     source_pool = new_today or contacts
     top_source = Counter(c["source"] for c in source_pool).most_common(1)
 
