@@ -10,7 +10,7 @@ load_dotenv()
 from claude_agent import answer_question, generate_report
 from ghl_client import fetch_all
 from github_client import save_report
-from telegram_client import send_error, send_message, send_report, send_typing, start_polling
+from telegram_client import archive_text, send_error, send_message, send_report, send_typing, start_polling
 
 # GHL data cache — refreshed every 5 minutes
 _cache: dict = {"data": None, "ts": 0.0}
@@ -40,7 +40,7 @@ def handle_message(text: str, chat_id: str) -> None:
         _cache["ts"] = time.time()
         report = generate_report(data)
         send_report(report)
-        save_report(report)
+        save_report(archive_text(report))
         return
 
     send_typing(chat_id)

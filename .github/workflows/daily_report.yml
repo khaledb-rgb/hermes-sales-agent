@@ -30,6 +30,10 @@ jobs:
           GHL_LOCATION_ID: ${{ secrets.GHL_LOCATION_ID }}
           GHL_COMPANY_ID: ${{ secrets.GHL_COMPANY_ID }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          REPORT_MODEL: deepseek/deepseek-chat-v3.1
+          QA_MODEL: deepseek/deepseek-chat-v3.1
+          CALENDLY_API_KEY: ${{ secrets.CALENDLY_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_ADMIN_ID: ${{ secrets.TELEGRAM_ADMIN_ID }}

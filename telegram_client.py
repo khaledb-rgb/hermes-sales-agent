@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from typing import Callable
 
@@ -6,6 +7,11 @@ import requests
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Reports may bundle several Telegram messages into one string, separated by a
+# line containing only "---SPLIT---". send_report() sends each as its own message.
+SPLIT_MARKER = "---SPLIT---"
+_SPLIT_RE = re.compile(r"(?m)^[ \t]*-{3}\s*SPLIT\s*-{3}[ \t]*$")
 
 _TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 _CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -85,8 +91,20 @@ def send_error(error: str) -> None:
     print(f"[telegram] error: {error}")
 
 
+def _split_parts(text: str) -> list:
+    """Split a report into separate messages on the ---SPLIT--- marker."""
+    return [part.strip() for part in _SPLIT_RE.split(text) if part.strip()]
+
+
 def send_report(text: str) -> None:
-    send_message(_CHAT_ID, text)
+    """Send a report to the group, one Telegram message per ---SPLIT--- section."""
+    for part in _split_parts(text):
+        send_message(_CHAT_ID, part)
+
+
+def archive_text(text: str) -> str:
+    """Collapse the multi-message split marker into one clean document for saving."""
+    return _SPLIT_RE.sub("———", text).strip()
 
 
 def get_chat_id() -> None:

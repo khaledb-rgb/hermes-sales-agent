@@ -2,6 +2,7 @@ import json
 import os
 import re
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -9,7 +10,26 @@ from openai import OpenAI, OpenAIError
 
 load_dotenv()
 
-_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# LLM provider — if OPENROUTER_API_KEY is set, route through OpenRouter (DeepSeek
+# V3.1 by default); otherwise fall back to OpenAI directly. The openai SDK speaks
+# to both since OpenRouter is OpenAI-compatible.
+_OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
+if _OPENROUTER_KEY:
+    _client = OpenAI(
+        api_key=_OPENROUTER_KEY,
+        base_url=os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
+        default_headers={
+            "HTTP-Referer": "https://github.com/khaledb-rgb/hermes-sales-agent",
+            "X-Title": "Hermes Sales Agent",
+        },
+    )
+    _REPORT_MODEL = os.getenv("REPORT_MODEL", "deepseek/deepseek-chat-v3.1")
+    _QA_MODEL = os.getenv("QA_MODEL", "deepseek/deepseek-chat-v3.1")
+else:
+    _client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    _REPORT_MODEL = os.getenv("REPORT_MODEL", "gpt-4o")
+    _QA_MODEL = os.getenv("QA_MODEL", "gpt-4o-mini")
+
 _system_prompt_path = Path(__file__).parent / "prompts" / "system_prompt.txt"
 
 _QA_SYSTEM = """You are Hermes, an AI assistant embedded in a sales team's Telegram group.
@@ -191,15 +211,40 @@ def _slim_for_report(data: dict) -> dict:
     }
 
 
+def _now() -> datetime:
+    """Current time, in REPORT_TIMEZONE (IANA name) if set, else system local time."""
+    tz_name = os.getenv("REPORT_TIMEZONE")
+    if tz_name:
+        try:
+            from zoneinfo import ZoneInfo
+
+            return datetime.now(ZoneInfo(tz_name))
+        except Exception as e:  # bad name or missing tzdata — fall back to local
+            print(f"[agent] REPORT_TIMEZONE={tz_name!r} unusable ({e}); using local time")
+    return datetime.now()
+
+
+def _report_clock() -> tuple[str, str]:
+    """Return (header_date, footer_time), e.g. ('Monday, 16 Jun 2026', '09:01')."""
+    now = _now()
+    day = str(int(now.strftime("%d")))  # drop leading zero
+    header_date = f"{now.strftime('%A')}, {day} {now.strftime('%b %Y')}"
+    footer_time = now.strftime("%H:%M")
+    return header_date, footer_time
+
+
 def generate_report(data: dict) -> str:
     system = _system_prompt_path.read_text(encoding="utf-8")
+    report_date, sent_time = _report_clock()
     user_message = (
+        f"REPORT DATE (use verbatim in the header date line): {report_date}\n"
+        f"SENT TIME (use verbatim in the footer timestamp): {sent_time}\n\n"
         "Here is today's CRM data. Generate the sales report:\n\n"
         + json.dumps(_slim_for_report(data), ensure_ascii=False, default=str)
     )
     try:
         response = _client.chat.completions.create(
-            model="gpt-4o",
+            model=_REPORT_MODEL,
             max_tokens=2048,
             messages=[
                 {"role": "system", "content": system},
@@ -252,7 +297,7 @@ def answer_question(question: str, data: dict) -> str:
     )
     try:
         response = _client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=_QA_MODEL,
             max_tokens=4000,
             messages=[
                 {"role": "system", "content": _QA_SYSTEM},
